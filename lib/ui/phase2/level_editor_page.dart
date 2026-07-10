@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../logic/asset_bundle.dart';
-import '../../models/port.dart';
 import '../../state/app_providers.dart';
 import '../../state/level_editor_providers.dart';
 import '../widgets/block_thumbnail.dart';
@@ -52,8 +51,6 @@ class LevelEditorPage extends ConsumerWidget {
         Expanded(
           child: Column(
             children: [
-              _Toolbar(state: state, notifier: notifier),
-              const Divider(height: 1),
               Expanded(
                 child: library.isEmpty
                     ? Center(
@@ -65,13 +62,21 @@ class LevelEditorPage extends ConsumerWidget {
                     : Focus(
                         autofocus: true,
                         onKeyEvent: (node, event) {
-                          if (event is KeyDownEvent &&
-                              (event.logicalKey ==
-                                      LogicalKeyboardKey.delete ||
-                                  event.logicalKey ==
-                                      LogicalKeyboardKey.backspace)) {
-                            notifier.deleteSelected();
-                            return KeyEventResult.handled;
+                          if (event is KeyDownEvent) {
+                            final isControlPressed =
+                                HardwareKeyboard.instance.isControlPressed ||
+                                    HardwareKeyboard.instance.isMetaPressed;
+                            if (isControlPressed &&
+                                event.logicalKey == LogicalKeyboardKey.keyZ) {
+                              notifier.undo();
+                              return KeyEventResult.handled;
+                            }
+                            if (event.logicalKey == LogicalKeyboardKey.delete ||
+                                event.logicalKey ==
+                                    LogicalKeyboardKey.backspace) {
+                              notifier.deleteSelected();
+                              return KeyEventResult.handled;
+                            }
                           }
                           return KeyEventResult.ignored;
                         },
@@ -201,128 +206,4 @@ class _Palette extends StatelessWidget {
   }
 }
 
-class _Toolbar extends StatelessWidget {
-  const _Toolbar({required this.state, required this.notifier});
 
-  final LevelEditorState state;
-  final LevelEditorNotifier notifier;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-          child: Row(
-            children: [
-              Icon(Icons.layers_outlined,
-                  size: 18, color: theme.colorScheme.outline),
-              const SizedBox(width: 8),
-              SegmentedButton<MapLayer>(
-                showSelectedIcon: false,
-                segments: [
-                  for (final layer in MapLayer.values)
-                    ButtonSegment(value: layer, label: Text(layer.label)),
-                ],
-                selected: {state.activeLayer},
-                onSelectionChanged: (s) => notifier.setLayer(s.first),
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              SegmentedButton<LevelTool>(
-                showSelectedIcon: false,
-                segments: [
-                  for (final tool in LevelTool.values)
-                    ButtonSegment(
-                      value: tool,
-                      tooltip: tool.label,
-                      icon: Icon(switch (tool) {
-                        LevelTool.select => Icons.near_me_outlined,
-                        LevelTool.multi => Icons.select_all,
-                        LevelTool.stamp => Icons.add_box_outlined,
-                        LevelTool.connect => Icons.hub_outlined,
-                        LevelTool.insert => Icons.linear_scale,
-                        LevelTool.spawn => Icons.flag_outlined,
-                        LevelTool.erase => Icons.delete_outline,
-                      }),
-                    ),
-                ],
-                selected: {state.tool},
-                onSelectionChanged: (s) => notifier.setTool(s.first),
-              ),
-              Text('${state.placements.length} placed',
-                  style: theme.textTheme.labelMedium),
-              OutlinedButton.icon(
-                onPressed: state.highlighted.length == 1
-                    ? () => notifier
-                        .deleteStraightAndClose(state.highlighted.first)
-                    : null,
-                icon: const Icon(Icons.compress, size: 18),
-                label: const Text('Remove & close'),
-              ),
-              if (state.tool == LevelTool.spawn)
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('Facing'),
-                    const SizedBox(width: 4),
-                    DropdownButton<PortDirection>(
-                      value: state.spawnFacing,
-                      isDense: true,
-                      items: const [
-                        DropdownMenuItem(
-                            value: PortDirection.up, child: Text('Up')),
-                        DropdownMenuItem(
-                            value: PortDirection.right, child: Text('Right')),
-                        DropdownMenuItem(
-                            value: PortDirection.down, child: Text('Down')),
-                        DropdownMenuItem(
-                            value: PortDirection.left, child: Text('Left')),
-                      ],
-                      onChanged: (d) {
-                        if (d != null) notifier.setSpawnFacing(d);
-                      },
-                    ),
-                  ],
-                ),
-              if (state.activeLayer == MapLayer.island)
-                FilledButton.tonalIcon(
-                  onPressed: notifier.generateIsland,
-                  icon: const Icon(Icons.grass, size: 18),
-                  label: const Text('Generate Island'),
-                ),
-              OutlinedButton.icon(
-                onPressed: state.placements.isEmpty ? null : notifier.clearAll,
-                icon: const Icon(Icons.clear_all, size: 18),
-                label: const Text('Clear'),
-              ),
-              FilledButton.icon(
-                onPressed: notifier.exportMap,
-                icon: const Icon(Icons.save_alt, size: 18),
-                label: const Text('Export map'),
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-          child: Text(
-            state.statusMessage ?? '',
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall,
-          ),
-        ),
-      ],
-    );
-  }
-}

@@ -42,7 +42,7 @@ void main() {
   test('MapLayer maps categories to layers', () {
     expect(MapLayer.forCategory(BlockCategory.track), MapLayer.track);
     expect(MapLayer.forCategory(BlockCategory.islandTile), MapLayer.island);
-    expect(MapLayer.forCategory(BlockCategory.finishLine), MapLayer.decoration);
+    expect(MapLayer.forCategory(BlockCategory.decoration), MapLayer.decoration);
   });
 
   test('blocks on different layers may overlap', () {

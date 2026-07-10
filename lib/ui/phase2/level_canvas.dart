@@ -156,9 +156,17 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
       final (x, y) = _toCell(local);
       switch (state.tool) {
         case LevelTool.stamp:
-          notifier.stampAt(x, y);
+          if (state.activeLayer == MapLayer.island) {
+            notifier.paintGrassAt(x, y, erase: false);
+          } else {
+            notifier.stampAt(x, y);
+          }
         case LevelTool.erase:
-          notifier.eraseAt(x, y);
+          if (state.activeLayer == MapLayer.island) {
+            notifier.paintGrassAt(x, y, erase: true);
+          } else {
+            notifier.eraseAt(x, y);
+          }
         case LevelTool.select:
           notifier.selectAt(x, y);
         case LevelTool.multi:
@@ -200,9 +208,17 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
     void handleDrag(Offset local) {
       final (x, y) = _toCell(local);
       if (state.tool == LevelTool.stamp) {
-        notifier.stampAt(x, y);
+        if (state.activeLayer == MapLayer.island) {
+          notifier.paintGrassAt(x, y, erase: false);
+        } else {
+          notifier.stampAt(x, y);
+        }
       } else if (state.tool == LevelTool.erase) {
-        notifier.eraseAt(x, y);
+        if (state.activeLayer == MapLayer.island) {
+          notifier.paintGrassAt(x, y, erase: true);
+        } else {
+          notifier.eraseAt(x, y);
+        }
       } else if (state.tool == LevelTool.multi) {
         notifier.multiDragUpdate(x, y);
       }
@@ -219,9 +235,7 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
       maxScale: 10,
       boundaryMargin: const EdgeInsets.all(400),
       child: MouseRegion(
-        onHover: state.tool == LevelTool.stamp
-            ? (event) => notifier.setHover(_toCell(event.localPosition))
-            : null,
+        onHover: (event) => notifier.setHover(_toCell(event.localPosition)),
         onExit: (_) => notifier.setHover(null),
         child: GestureDetector(
           onTapUp: (d) => handleTap(d.localPosition, d.globalPosition),
@@ -260,6 +274,8 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
               insertMarkers: insertMarkers,
               spawn: state.spawn,
               activeLayer: state.activeLayer,
+              islandGrassMask: state.islandGrassMask,
+              islandBrushRadius: state.islandBrushRadius,
             ),
           ),
         ),
@@ -284,6 +300,8 @@ class _LevelPainter extends CustomPainter {
     required this.insertMarkers,
     required this.spawn,
     required this.activeLayer,
+    required this.islandGrassMask,
+    required this.islandBrushRadius,
   });
 
   final AssetLibrary blocks;
@@ -300,6 +318,8 @@ class _LevelPainter extends CustomPainter {
   final List<(int, int)>? insertMarkers;
   final SpawnPoint? spawn;
   final MapLayer activeLayer;
+  final Set<(int, int)>? islandGrassMask;
+  final int islandBrushRadius;
 
   static const _cell = GridConstants.cellSize;
 
@@ -311,6 +331,9 @@ class _LevelPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     _paintGrid(canvas, size);
+
+    // Render underlying manual grass mask under blocks
+    _paintGrassMask(canvas, size);
 
     // Other layers first, dimmed for context; the active layer on top.
     for (var i = 0; i < placements.length; i++) {
@@ -325,12 +348,50 @@ class _LevelPainter extends CustomPainter {
       }
     }
 
+    _paintAlignmentGuides(canvas, size);
     _paintStampGhost(canvas);
     _paintExtendPreview(canvas);
     _paintGroupMove(canvas);
     _paintMarquee(canvas);
     _paintInsertMarkers(canvas);
     _paintSpawn(canvas);
+  }
+
+  void _paintAlignmentGuides(Canvas canvas, Size size) {
+    final hover = hoverCell;
+    if (hover == null) return;
+
+    final paint = Paint()
+      ..color = Colors.cyan.withValues(alpha: 0.35)
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+
+    final cx = (hover.$1 + 0.5) * _cell;
+    final cy = (hover.$2 + 0.5) * _cell;
+
+    // Vertical guide line
+    canvas.drawLine(Offset(cx, 0), Offset(cx, size.height), paint);
+    // Horizontal guide line
+    canvas.drawLine(Offset(0, cy), Offset(size.width, cy), paint);
+  }
+
+  void _paintGrassMask(Canvas canvas, Size size) {
+    if (activeLayer != MapLayer.island || islandGrassMask == null) return;
+
+    final paint = Paint()
+      ..color = Colors.greenAccent.withValues(alpha: 0.15)
+      ..style = PaintingStyle.fill;
+
+    final borderPaint = Paint()
+      ..color = Colors.greenAccent.withValues(alpha: 0.3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.0;
+
+    for (final (x, y) in islandGrassMask!) {
+      final rect = Rect.fromLTWH(x * _cell, y * _cell, _cell, _cell);
+      canvas.drawRect(rect, paint);
+      canvas.drawRect(rect, borderPaint);
+    }
   }
 
   void _paintSpawn(Canvas canvas) {
@@ -582,10 +643,36 @@ class _LevelPainter extends CustomPainter {
   }
 
   void _paintStampGhost(Canvas canvas) {
+    if (activeLayer == MapLayer.island) {
+      if (tool != LevelTool.stamp && tool != LevelTool.erase) return;
+      final hover = hoverCell;
+      if (hover == null) return;
+
+      final radius = islandBrushRadius;
+      final tint = tool == LevelTool.stamp ? Colors.greenAccent : Colors.redAccent;
+      final rect = Rect.fromLTRB(
+        (hover.$1 - radius) * _cell,
+        (hover.$2 - radius) * _cell,
+        (hover.$1 + radius + 1) * _cell,
+        (hover.$2 + radius + 1) * _cell,
+      );
+      canvas.drawRect(rect, Paint()..color = tint.withValues(alpha: 0.18));
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..color = tint,
+      );
+      return;
+    }
+
     if (tool != LevelTool.stamp) return;
     final hover = hoverCell;
+    if (hover == null) return;
+
     final id = stampId;
-    if (hover == null || id == null) return;
+    if (id == null) return;
     final def = blocks.blockById(id);
     if (def == null) return;
     // Clamp the origin so the ghost stays fully inside the grid, exactly
@@ -654,5 +741,7 @@ class _LevelPainter extends CustomPainter {
       old.groupDelta != groupDelta ||
       old.insertMarkers != insertMarkers ||
       old.spawn != spawn ||
-      old.activeLayer != activeLayer;
+      old.activeLayer != activeLayer ||
+      old.islandGrassMask != islandGrassMask ||
+      old.islandBrushRadius != islandBrushRadius;
 }

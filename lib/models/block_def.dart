@@ -6,7 +6,9 @@ import 'port.dart';
 enum BlockCategory {
   track('TRACK'),
   islandTile('ISLAND_TILE'),
-  finishLine('FINISH_LINE');
+  decoration('DECORATION'),
+  wall('WALL'),
+  checkLine('CHECK_LINE');
 
   const BlockCategory(this.jsonValue);
   final String jsonValue;

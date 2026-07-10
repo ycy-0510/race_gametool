@@ -141,8 +141,8 @@ class ExtendPreview {
 enum MapLayer {
   island('Island', {BlockCategory.islandTile}),
   track('Track', {BlockCategory.track}),
-  decoration('Decoration', {BlockCategory.finishLine}),
-  function('Function', <BlockCategory>{});
+  decoration('Decoration', {BlockCategory.decoration}),
+  function('Function', {BlockCategory.wall, BlockCategory.checkLine});
 
   const MapLayer(this.label, this.categories);
   final String label;
@@ -173,6 +173,9 @@ class LevelEditorState {
     this.spawn,
     this.spawnFacing = PortDirection.right,
     this.statusMessage,
+    this.islandGrassMask,
+    this.undoStack = const [],
+    this.islandBrushRadius = 0,
   });
 
   final String mapName;
@@ -212,6 +215,15 @@ class LevelEditorState {
 
   final String? statusMessage;
 
+  /// Manually brushed island grass/water mask.
+  final Set<(int, int)>? islandGrassMask;
+
+  /// History stack for the Undo feature: (placements, spawn, islandGrassMask).
+  final List<(List<BlockPlacement>, SpawnPoint?, Set<(int, int)>?)> undoStack;
+
+  /// Radius of the island paint/erase brush in cells (0 = 1x1, 1 = 3x3, etc.)
+  final int islandBrushRadius;
+
   /// All highlighted placements: the multi-selection plus any single
   /// selection from the other tools.
   Set<int> get highlighted =>
@@ -232,6 +244,9 @@ class LevelEditorState {
     SpawnPoint? Function()? spawn,
     PortDirection? spawnFacing,
     String? Function()? statusMessage,
+    Set<(int, int)>? Function()? islandGrassMask,
+    List<(List<BlockPlacement>, SpawnPoint?, Set<(int, int)>?)>? undoStack,
+    int? islandBrushRadius,
   }) =>
       LevelEditorState(
         mapName: mapName ?? this.mapName,
@@ -254,12 +269,49 @@ class LevelEditorState {
         spawnFacing: spawnFacing ?? this.spawnFacing,
         statusMessage:
             statusMessage != null ? statusMessage() : this.statusMessage,
+        islandGrassMask: islandGrassMask != null
+            ? islandGrassMask()
+            : this.islandGrassMask,
+        undoStack: undoStack ?? this.undoStack,
+        islandBrushRadius: islandBrushRadius ?? this.islandBrushRadius,
       );
 }
 
 class LevelEditorNotifier extends Notifier<LevelEditorState> {
   @override
   LevelEditorState build() => const LevelEditorState();
+
+  void _saveToHistory() {
+    final currentPlacements = state.placements;
+    final currentSpawn = state.spawn;
+    final currentGrassMask = state.islandGrassMask;
+
+    final newStack = [...state.undoStack, (currentPlacements, currentSpawn, currentGrassMask)];
+    if (newStack.length > 50) {
+      newStack.removeAt(0);
+    }
+    state = state.copyWith(undoStack: newStack);
+  }
+
+  void undo() {
+    if (state.undoStack.isEmpty) {
+      state = state.copyWith(statusMessage: () => 'Nothing to undo');
+      return;
+    }
+    final history = [...state.undoStack];
+    final (prevPlacements, prevSpawn, prevGrassMask) = history.removeLast();
+
+    state = state.copyWith(
+      placements: prevPlacements,
+      spawn: () => prevSpawn,
+      islandGrassMask: () => prevGrassMask,
+      undoStack: history,
+      selectedPlacementIndex: () => null,
+      selection: const {},
+      extendPreview: () => null,
+      statusMessage: () => 'Undo successful',
+    );
+  }
 
   List<BlockDef> get _blocks => ref.read(assetLibraryProvider).blocks;
 
@@ -282,15 +334,33 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   /// Whether a placement belongs to the layer currently being edited.
   bool onActiveLayer(BlockPlacement p) => layerOf(p) == state.activeLayer;
 
-  void setLayer(MapLayer layer) => state = state.copyWith(
-        activeLayer: layer,
+  void setLayer(MapLayer layer) {
+    LevelTool nextTool = state.tool;
+    if (layer == MapLayer.island) {
+      if (nextTool == LevelTool.connect ||
+          nextTool == LevelTool.insert ||
+          nextTool == LevelTool.spawn) {
+        nextTool = LevelTool.stamp;
+      }
+    }
+    state = state.copyWith(
+      activeLayer: layer,
+      tool: nextTool,
+      selectedPlacementIndex: () => null,
+      selection: const {},
+      marquee: () => null,
+      selectedPaletteId: () => null,
+      statusMessage: () => 'Editing ${layer.label} layer',
+    );
+  }
+
+  void setTool(LevelTool tool) => state = state.copyWith(
+        tool: tool,
         selectedPlacementIndex: () => null,
         selection: const {},
-        selectedPaletteId: () => null,
-        statusMessage: () => 'Editing ${layer.label} layer',
+        marquee: () => null,
+        extendPreview: () => null,
       );
-
-  void setTool(LevelTool tool) => state = state.copyWith(tool: tool);
 
   void setStatus(String message) =>
       state = state.copyWith(statusMessage: () => message);
@@ -485,6 +555,7 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
               'Cannot connect ${candidate.def.id}: no room here');
       return;
     }
+    _saveToHistory();
     final placement = BlockPlacement(
         blockId: candidate.def.id,
         gridX: candidate.gridX,
@@ -591,6 +662,7 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   void commitExtend(int count) {
     final preview = state.extendPreview;
     if (preview == null) return;
+    _saveToHistory();
     final n = count.clamp(1, preview.positions.length);
     final additions = [
       for (var i = 0; i < n; i++)
@@ -647,6 +719,7 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
           statusMessage: () => 'Cannot place $id here: overlaps another block');
       return;
     }
+    _saveToHistory();
     final placement = BlockPlacement(blockId: id, gridX: x, gridY: y);
     state = state.copyWith(
       placements: [...state.placements, placement],
@@ -714,35 +787,61 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   }
 
   void _removeAt(int index) {
-    final removed = state.placements[index].blockId;
+    _saveToHistory();
+    final p = state.placements[index];
+    final removed = p.blockId;
+    final isIsland = layerOf(p) == MapLayer.island;
+
     final placements = [...state.placements]..removeAt(index);
+
+    Set<(int, int)>? nextMask = state.islandGrassMask;
+    if (isIsland && nextMask != null) {
+      nextMask = {...nextMask}..remove((p.gridX, p.gridY));
+    }
+
     state = state.copyWith(
       placements: placements,
       selectedPlacementIndex: () => null,
       selection: const {},
+      marquee: () => null,
+      islandGrassMask: () => nextMask,
       statusMessage: () => 'Removed $removed',
     );
   }
 
   void _removeIndices(Set<int> indices) {
-    final placements = [
-      for (var i = 0; i < state.placements.length; i++)
-        if (!indices.contains(i)) state.placements[i],
-    ];
+    _saveToHistory();
+    Set<(int, int)>? nextMask = state.islandGrassMask;
+    final placements = <BlockPlacement>[];
+    for (var i = 0; i < state.placements.length; i++) {
+      final p = state.placements[i];
+      if (indices.contains(i)) {
+        if (layerOf(p) == MapLayer.island && nextMask != null) {
+          nextMask = {...nextMask}..remove((p.gridX, p.gridY));
+        }
+      } else {
+        placements.add(p);
+      }
+    }
     state = state.copyWith(
       placements: placements,
       selection: const {},
       selectedPlacementIndex: () => null,
+      marquee: () => null,
+      islandGrassMask: () => nextMask,
       statusMessage: () => 'Removed ${indices.length} blocks',
     );
   }
 
-  void clearAll() => state = state.copyWith(
-        placements: const [],
-        selectedPlacementIndex: () => null,
-        selection: const {},
-        statusMessage: () => 'Cleared all placements',
-      );
+  void clearAll() {
+    _saveToHistory();
+    state = state.copyWith(
+      placements: const [],
+      selectedPlacementIndex: () => null,
+      selection: const {},
+      statusMessage: () => 'Cleared all placements',
+    );
+  }
 
   // --- Multi-select (marquee) and group drag --------------------------------
 
@@ -858,6 +957,7 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
         }
       }
     }
+    _saveToHistory();
     final placements = [
       for (var i = 0; i < state.placements.length; i++)
         if (sel.contains(i))
@@ -1015,6 +1115,7 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
       state = state.copyWith(statusMessage: () => err);
       return;
     }
+    _saveToHistory();
     state = state.copyWith(
       placements: newList,
       selectedPlacementIndex: () => newList.length - 1,
@@ -1085,6 +1186,7 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
       state = state.copyWith(statusMessage: () => err);
       return;
     }
+    _saveToHistory();
     state = state.copyWith(
       placements: newList,
       selectedPlacementIndex: () => null,
@@ -1109,6 +1211,7 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   }
 
   void setSpawnAt(int gridX, int gridY) {
+    _saveToHistory();
     state = state.copyWith(
       spawn: () => SpawnPoint(
           gridX: gridX, gridY: gridY, facingAngle: state.spawnFacing.angle),
@@ -1117,8 +1220,10 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
     );
   }
 
-  void clearSpawn() =>
-      state = state.copyWith(spawn: () => null, statusMessage: () => 'Spawn cleared');
+  void clearSpawn() {
+    _saveToHistory();
+    state = state.copyWith(spawn: () => null, statusMessage: () => 'Spawn cleared');
+  }
 
   // --- Auto island generation ------------------------------------------------
 
@@ -1137,19 +1242,51 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   /// layer, replacing any existing island placements. Requires the full
   /// convex tile set (concave corners unlock inward notches).
   void generateIsland() {
-    final tiles = _islandTilesBySignature();
-    final missingConvex = [
-      for (final s in convexSetSignatures)
-        if (!tiles.containsKey(sigKey(s))) islandKindLabel(s),
-    ];
-    if (missingConvex.isNotEmpty) {
-      state = state.copyWith(
-          statusMessage: () =>
-              'Cannot generate: missing ${missingConvex.toSet().join(", ")} tile(s)');
-      return;
-    }
+    _saveToHistory();
+    final mask = _ensureGrassMask();
+    _autotileGrassMask(mask);
+  }
 
-    // Track footprint (only the track layer defines the island shape).
+  void resetIslandMask() {
+    _saveToHistory();
+    state = state.copyWith(islandGrassMask: () => null);
+    generateIsland();
+  }
+
+  void setIslandBrushRadius(int radius) {
+    state = state.copyWith(islandBrushRadius: radius);
+  }
+
+  void paintGrassAt(int cx, int cy, {required bool erase}) {
+    final mask = {..._ensureGrassMask()};
+    final radius = state.islandBrushRadius;
+    var changed = false;
+    for (var dy = -radius; dy <= radius; dy++) {
+      for (var dx = -radius; dx <= radius; dx++) {
+        final x = cx + dx;
+        final y = cy + dy;
+        if (x >= 0 &&
+            x < GridConstants.levelGridCols &&
+            y >= 0 &&
+            y < GridConstants.levelGridRows) {
+          if (erase) {
+            if (mask.remove((x, y))) changed = true;
+          } else {
+            if (mask.add((x, y))) changed = true;
+          }
+        }
+      }
+    }
+    if (!changed) return;
+    _saveToHistory();
+    _autotileGrassMask(mask);
+  }
+
+  Set<(int, int)> _ensureGrassMask() {
+    if (state.islandGrassMask != null) {
+      return state.islandGrassMask!;
+    }
+    // Generate default from track footprint
     final footprint = <(int, int)>{};
     for (final p in state.placements) {
       if (layerOf(p) != MapLayer.track) continue;
@@ -1162,17 +1299,50 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
       }
     }
     if (footprint.isEmpty) {
-      state = state.copyWith(
-          statusMessage: () => 'Place some track first, then generate');
-      return;
+      return <(int, int)>{};
     }
-
-    final grid = dilateRegion(
+    final gridList = dilateRegion(
       footprint,
       cols: GridConstants.levelGridCols,
       rows: GridConstants.levelGridRows,
       padding: GridConstants.islandPaddingCells,
     );
+    final mask = <(int, int)>{};
+    for (var y = 0; y < gridList.length; y++) {
+      for (var x = 0; x < gridList[y].length; x++) {
+        if (gridList[y][x] == 1) {
+          mask.add((x, y));
+        }
+      }
+    }
+    return mask;
+  }
+
+  void _autotileGrassMask(Set<(int, int)> mask) {
+    final tiles = _islandTilesBySignature();
+    final missingConvex = [
+      for (final s in convexSetSignatures)
+        if (!tiles.containsKey(sigKey(s))) islandKindLabel(s),
+    ];
+    if (missingConvex.isNotEmpty) {
+      state = state.copyWith(
+        islandGrassMask: () => mask,
+        statusMessage: () =>
+            'Cannot generate: missing ${missingConvex.toSet().join(", ")} tile(s)',
+      );
+      return;
+    }
+
+    final grid = List.generate(
+      GridConstants.levelGridRows,
+      (_) => List.filled(GridConstants.levelGridCols, 0),
+    );
+    for (final (x, y) in mask) {
+      if (x >= 0 && x < GridConstants.levelGridCols && y >= 0 && y < GridConstants.levelGridRows) {
+        grid[y][x] = 1;
+      }
+    }
+
     final result = autotileIsland(grid: grid, tileIdsBySignature: tiles);
 
     // Replace island-layer placements, keep everything else.
@@ -1181,12 +1351,13 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
         if (layerOf(p) != MapLayer.island) p,
     ];
     state = state.copyWith(
+      islandGrassMask: () => mask,
       placements: [...kept, ...result.placements],
       selection: const {},
       selectedPlacementIndex: () => null,
       statusMessage: () => result.unmatched == 0
-          ? 'Generated ${result.placements.length} island tiles'
-          : 'Generated ${result.placements.length} tiles; ${result.unmatched} '
+          ? 'Autotiled ${result.placements.length} island tiles'
+          : 'Autotiled ${result.placements.length} tiles; ${result.unmatched} '
               'cell(s) unmatched (add concave corners for notches)',
     );
   }

@@ -13,7 +13,7 @@ Future<void> main() async {
     minimumSize: Size(1100, 700),
     center: true,
     title: 'Race Game Tool',
-    titleBarStyle: TitleBarStyle.normal,
+    titleBarStyle: TitleBarStyle.hidden,
   );
   await windowManager.waitUntilReadyToShow(windowOptions, () async {
     await windowManager.show();
