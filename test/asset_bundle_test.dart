@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:race_gametool/logic/asset_bundle.dart';
+import 'package:race_gametool/models/block_def.dart';
 import 'package:race_gametool/models/mask_draft.dart';
 import 'package:race_gametool/models/port.dart';
 
@@ -40,7 +41,7 @@ void main() {
 
   test('write then read round trips editor state and game assets', () {
     final bundle = writeAssetBundle(
-      rawImageBytes: _draft(),
+      categoryImages: {BlockCategory.track: _draft()},
       imageName: 'draft.png',
       masks: masks,
     );
@@ -65,7 +66,7 @@ void main() {
 
   test('extractGameAssets returns the sheet and dict without editor data', () {
     final bundle = writeAssetBundle(
-      rawImageBytes: _draft(),
+      categoryImages: {BlockCategory.track: _draft()},
       imageName: 'draft.png',
       masks: masks,
     );

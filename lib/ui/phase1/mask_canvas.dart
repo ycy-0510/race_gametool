@@ -1,9 +1,11 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants.dart';
+import '../../models/block_def.dart';
 import '../../models/mask_draft.dart';
 import '../../state/asset_definer_providers.dart';
 import '../widgets/port_marker.dart';
@@ -188,9 +190,12 @@ class _MaskCanvasPainter extends CustomPainter {
     final borderColor = selected ? Colors.yellowAccent : Colors.lightGreen;
     final fillPaint = Paint()
       ..color = borderColor.withValues(alpha: selected ? 0.14 : 0.07);
+    final strokeWidth = mask.category == BlockCategory.islandTile
+        ? (selected ? 1.5 : 0.8)
+        : (selected ? 2.5 : 1.5);
     final strokePaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = selected ? 2.5 : 1.5
+      ..strokeWidth = strokeWidth
       ..color = borderColor;
 
     final origin = Offset(mask.gridX * _cell, mask.gridY * _cell);
@@ -222,52 +227,66 @@ class _MaskCanvasPainter extends CustomPainter {
       }
     }
 
-    // Block ID label above the box.
-    final textPainter = TextPainter(
-      text: TextSpan(
-        text: mask.id,
-        style: TextStyle(
-          color: borderColor,
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-          shadows: const [Shadow(blurRadius: 3, color: Colors.black)],
+    if (mask.category != BlockCategory.islandTile) {
+      // Block ID label above the box.
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: mask.id,
+          style: TextStyle(
+            color: borderColor,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            shadows: const [Shadow(blurRadius: 3, color: Colors.black)],
+          ),
         ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    textPainter.paint(canvas, origin + const Offset(2, -16));
+        textDirection: TextDirection.ltr,
+      )..layout();
+      textPainter.paint(canvas, origin + const Offset(2, -16));
+    }
 
-    for (final port in mask.ports) {
-      final (extentW, extentH) = port.cellExtent;
-      final stripRect = Rect.fromLTWH(
-        origin.dx + port.localGridX * _cell,
-        origin.dy + port.localGridY * _cell,
-        extentW * _cell,
-        extentH * _cell,
-      );
-      final portColor = defaultPortColor(port.direction);
-      if (port.span > 1) {
-        final rrect =
-            RRect.fromRectAndRadius(stripRect.deflate(1.5), const Radius.circular(4));
-        canvas.drawRRect(
-            rrect, Paint()..color = portColor.withValues(alpha: 0.25));
-        canvas.drawRRect(
-          rrect,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.2
-            ..color = portColor,
+      for (final port in mask.ports) {
+        final (extentW, extentH) = port.cellExtent;
+        final stripRect = Rect.fromLTWH(
+          origin.dx + port.localGridX * _cell,
+          origin.dy + port.localGridY * _cell,
+          extentW * _cell,
+          extentH * _cell,
+        );
+        final portColor = defaultPortColor(port.direction);
+        if (port.span > 1) {
+          final rrect = RRect.fromRectAndRadius(
+              stripRect.deflate(1.5), const Radius.circular(4));
+          canvas.drawRRect(
+              rrect, Paint()..color = portColor.withValues(alpha: 0.25));
+          canvas.drawRRect(
+            rrect,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.2
+              ..color = portColor,
+          );
+        }
+
+        var center = stripRect.center;
+        var radius = _cell * 0.6;
+
+        if (mask.category == BlockCategory.islandTile) {
+          // Push the small arrows out toward their corresponding edges/corners
+          // so they don't all overlap at the center of the 1x1 cell.
+          final angle = port.direction.angle;
+          center += Offset(math.cos(angle), math.sin(angle)) * (_cell * 0.35);
+          radius = _cell * 0.2;
+        }
+
+        paintPort(
+          canvas,
+          center,
+          radius,
+          port.direction,
+          bidirectional: port.bidirectional,
         );
       }
-      paintPort(
-        canvas,
-        stripRect.center,
-        _cell * 0.6,
-        port.direction,
-        bidirectional: port.bidirectional,
-      );
     }
-  }
 
   @override
   bool shouldRepaint(_MaskCanvasPainter oldDelegate) =>

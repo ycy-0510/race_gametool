@@ -124,6 +124,116 @@ SpriteExportResult buildSpriteExport({
   );
 }
 
+/// Multi-source variant: each mask is cropped from the source image of its
+/// own [BlockCategory]. This allows Track, Island, and FinishLine assets to
+/// come from different draft images.
+SpriteExportResult buildSpriteExportMultiSource({
+  required Map<BlockCategory, Uint8List> categoryImages,
+  required List<MaskDraft> masks,
+  String sheetFileName = 'SpriteSheet.png',
+}) {
+  if (masks.isEmpty) {
+    throw ArgumentError('No masks defined; nothing to export');
+  }
+
+  // Decode each category's source image once.
+  final decodedSources = <BlockCategory, img.Image>{};
+  for (final entry in categoryImages.entries) {
+    final decoded = img.decodeImage(entry.value);
+    if (decoded == null) {
+      throw ArgumentError(
+          'Could not decode image for ${entry.key.jsonValue}');
+    }
+    decodedSources[entry.key] = decoded;
+  }
+
+  const cell = GridConstants.cellSize;
+  final crops = <img.Image>[];
+  for (final mask in masks) {
+    final source = decodedSources[mask.category];
+    if (source == null) {
+      throw ArgumentError(
+          'No source image loaded for category ${mask.category.jsonValue} '
+          '(mask ${mask.id})');
+    }
+    var crop = img.copyCrop(
+      source,
+      x: (mask.gridX * cell).round(),
+      y: (mask.gridY * cell).round(),
+      width: (mask.widthCells * cell).round(),
+      height: (mask.heightCells * cell).round(),
+    );
+    crop = crop.convert(numChannels: 4);
+    final shapeCells = mask.cells;
+    if (shapeCells != null) {
+      final cellPx = cell.round();
+      for (var cy = 0; cy < mask.heightCells; cy++) {
+        for (var cx = 0; cx < mask.widthCells; cx++) {
+          if (shapeCells.contains((cx, cy))) continue;
+          for (var py = 0; py < cellPx; py++) {
+            for (var px = 0; px < cellPx; px++) {
+              crop.setPixelRgba(
+                  cx * cellPx + px, cy * cellPx + py, 0, 0, 0, 0);
+            }
+          }
+        }
+      }
+    }
+    crops.add(crop);
+  }
+
+  final packed = packSprites([
+    for (final c in crops) (width: c.width, height: c.height),
+  ]);
+
+  final sheet = img.Image(
+    width: packed.sheetWidth,
+    height: packed.sheetHeight,
+    numChannels: 4,
+  );
+  for (final rect in packed.rects) {
+    img.compositeImage(
+      sheet,
+      crops[rect.index],
+      dstX: rect.x,
+      dstY: rect.y,
+      blend: img.BlendMode.direct,
+    );
+  }
+
+  final blocks = <BlockDef>[];
+  for (final rect in packed.rects) {
+    final mask = masks[rect.index];
+    blocks.add(BlockDef(
+      id: mask.id,
+      boundingBox:
+          BoundingBox(width: mask.widthCells, height: mask.heightCells),
+      spriteSheetRect: SpriteSheetRect(
+        x: rect.x,
+        y: rect.y,
+        w: rect.width,
+        h: rect.height,
+      ),
+      category: mask.category,
+      cornerType: mask.cornerType,
+      ports: mask.ports,
+    ));
+  }
+
+  final jsonText = const JsonEncoder.withIndent('  ').convert({
+    'version': 1,
+    'cellSize': GridConstants.cellSize.round(),
+    'spriteSheet': sheetFileName,
+    'blocks': blocks.map((b) => b.toJson()).toList(),
+  });
+
+  return SpriteExportResult(
+    pngBytes: Uint8List.fromList(img.encodePng(sheet)),
+    jsonText: jsonText,
+    blocks: blocks,
+  );
+}
+
 /// Parses a sprite_dict.json produced by [buildSpriteExport].
 /// Returns the block list plus the sheet file name it references.
 ({List<BlockDef> blocks, String spriteSheet}) parseSpriteDict(

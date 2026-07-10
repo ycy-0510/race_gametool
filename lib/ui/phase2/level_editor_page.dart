@@ -103,7 +103,14 @@ class _Palette extends StatelessWidget {
     return Consumer(
       builder: (context, ref, _) {
         final library = ref.watch(assetLibraryProvider);
+        final activeLayer =
+            ref.watch(levelEditorProvider.select((s) => s.activeLayer));
         final theme = Theme.of(context);
+        // Only show blocks whose category belongs to the active layer.
+        final blocks = [
+          for (final b in library.blocks)
+            if (activeLayer.accepts(b.category)) b,
+        ];
         return SizedBox(
           width: 240,
           child: Column(
@@ -144,10 +151,21 @@ class _Palette extends StatelessWidget {
                           ),
                         ),
                       )
-                    : ListView.builder(
-                        itemCount: library.blocks.length,
+                    : blocks.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Text(
+                                'No ${activeLayer.label} blocks in this bundle.',
+                                textAlign: TextAlign.center,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                        itemCount: blocks.length,
                         itemBuilder: (context, index) {
-                          final block = library.blocks[index];
+                          final block = blocks[index];
                           final selected = block.id == selectedId;
                           return ListTile(
                             dense: true,
@@ -195,6 +213,25 @@ class _Toolbar extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: Row(
+            children: [
+              Icon(Icons.layers_outlined,
+                  size: 18, color: theme.colorScheme.outline),
+              const SizedBox(width: 8),
+              SegmentedButton<MapLayer>(
+                showSelectedIcon: false,
+                segments: [
+                  for (final layer in MapLayer.values)
+                    ButtonSegment(value: layer, label: Text(layer.label)),
+                ],
+                selected: {state.activeLayer},
+                onSelectionChanged: (s) => notifier.setLayer(s.first),
+              ),
+            ],
+          ),
+        ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
           child: Wrap(

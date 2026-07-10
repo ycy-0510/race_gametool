@@ -31,6 +31,7 @@ class AssetBundleData {
     required this.spriteDictJson,
     required this.blocks,
     required this.cellSize,
+    this.categoryRawImages = const {},
   });
 
   final Uint8List rawImageBytes;
@@ -40,6 +41,9 @@ class AssetBundleData {
   final String spriteDictJson;
   final List<BlockDef> blocks;
   final int cellSize;
+
+  /// Per-category raw source images. Empty for legacy single-image bundles.
+  final Map<BlockCategory, Uint8List> categoryRawImages;
 }
 
 /// The game-ready pair extracted from a bundle: the packed sheet PNG and
@@ -55,15 +59,21 @@ class GameAssets {
 /// and sprite dictionary are generated here from the raw image and masks,
 /// so the bundle stays the single source of truth: editor data and the
 /// derived game assets are always written together and can never drift.
+///
+/// [categoryImages] maps each BlockCategory to its raw source image bytes.
+/// Each mask is cropped from the image belonging to its category.
 Uint8List writeAssetBundle({
-  required Uint8List rawImageBytes,
+  required Map<BlockCategory, Uint8List> categoryImages,
   required String imageName,
   required List<MaskDraft> masks,
 }) {
-  final export = buildSpriteExport(rawImageBytes: rawImageBytes, masks: masks);
+  final export = buildSpriteExportMultiSource(
+    categoryImages: categoryImages,
+    masks: masks,
+  );
 
   final editorJson = const JsonEncoder.withIndent('  ').convert({
-    'version': 1,
+    'version': 2,
     'cellSize': GridConstants.cellSize.round(),
     'imageName': imageName,
     'masks': masks.map((m) => m.toJson()).toList(),
@@ -71,7 +81,7 @@ Uint8List writeAssetBundle({
 
   final manifestJson = const JsonEncoder.withIndent('  ').convert({
     'format': 'race_gametool.assets',
-    'version': 1,
+    'version': 2,
     'cellSize': GridConstants.cellSize.round(),
     'blockCount': export.blocks.length,
     'entries': {
@@ -82,12 +92,22 @@ Uint8List writeAssetBundle({
     },
   });
 
+  // Use the first available category image as the legacy raw_source.png
+  // for backward compatibility.
+  final fallbackBytes = categoryImages.values.first;
+
   final archive = Archive()
     ..addFile(_textFile(BundleEntries.manifest, manifestJson))
-    ..addFile(_bytesFile(BundleEntries.rawSource, rawImageBytes))
+    ..addFile(_bytesFile(BundleEntries.rawSource, fallbackBytes))
     ..addFile(_textFile(BundleEntries.editor, editorJson))
     ..addFile(_bytesFile(BundleEntries.spriteSheet, export.pngBytes))
     ..addFile(_textFile(BundleEntries.spriteDict, export.jsonText));
+
+  // Write each category's raw source image under its own filename.
+  for (final entry in categoryImages.entries) {
+    final catFile = 'raw_source_${entry.key.jsonValue.toLowerCase()}.png';
+    archive.addFile(_bytesFile(catFile, entry.value));
+  }
 
   return Uint8List.fromList(ZipEncoder().encodeBytes(archive));
 }
@@ -104,12 +124,27 @@ AssetBundleData readAssetBundle(Uint8List zipBytes) {
     return file.readBytes() ?? Uint8List(0);
   }
 
+  Uint8List? optionalBytes(String name) {
+    final file = archive.findFile(name);
+    return file?.readBytes();
+  }
+
   String requireText(String name) => utf8.decode(requireBytes(name));
 
   final editor = jsonDecode(requireText(BundleEntries.editor))
       as Map<String, dynamic>;
   final dictJson = requireText(BundleEntries.spriteDict);
   final parsed = parseSpriteDict(dictJson);
+
+  // Read per-category raw source images if available (v2 bundles).
+  final categoryRawImages = <BlockCategory, Uint8List>{};
+  for (final cat in BlockCategory.values) {
+    final catFile = 'raw_source_${cat.jsonValue.toLowerCase()}.png';
+    final bytes = optionalBytes(catFile);
+    if (bytes != null) {
+      categoryRawImages[cat] = bytes;
+    }
+  }
 
   return AssetBundleData(
     rawImageBytes: requireBytes(BundleEntries.rawSource),
@@ -122,6 +157,7 @@ AssetBundleData readAssetBundle(Uint8List zipBytes) {
     blocks: parsed.blocks,
     cellSize: (editor['cellSize'] as num?)?.round() ??
         GridConstants.cellSize.round(),
+    categoryRawImages: categoryRawImages,
   );
 }
 

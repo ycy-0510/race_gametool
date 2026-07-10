@@ -245,6 +245,7 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
               groupDelta: state.groupDelta,
               insertMarkers: insertMarkers,
               spawn: state.spawn,
+              activeLayer: state.activeLayer,
             ),
           ),
         ),
@@ -268,6 +269,7 @@ class _LevelPainter extends CustomPainter {
     required this.groupDelta,
     required this.insertMarkers,
     required this.spawn,
+    required this.activeLayer,
   });
 
   final AssetLibrary blocks;
@@ -283,15 +285,30 @@ class _LevelPainter extends CustomPainter {
   final (int, int)? groupDelta;
   final List<(int, int)>? insertMarkers;
   final SpawnPoint? spawn;
+  final MapLayer activeLayer;
 
   static const _cell = GridConstants.cellSize;
+
+  MapLayer? _layerOf(BlockPlacement p) {
+    final def = blocks.blockById(p.blockId);
+    return def == null ? null : MapLayer.forCategory(def.category);
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
     _paintGrid(canvas, size);
 
+    // Other layers first, dimmed for context; the active layer on top.
     for (var i = 0; i < placements.length; i++) {
-      _paintPlacement(canvas, placements[i], selected: selection.contains(i));
+      if (_layerOf(placements[i]) != activeLayer) {
+        _paintPlacement(canvas, placements[i], selected: false, dim: true);
+      }
+    }
+    for (var i = 0; i < placements.length; i++) {
+      if (_layerOf(placements[i]) == activeLayer) {
+        _paintPlacement(canvas, placements[i],
+            selected: selection.contains(i));
+      }
     }
 
     _paintStampGhost(canvas);
@@ -440,7 +457,7 @@ class _LevelPainter extends CustomPainter {
   }
 
   void _paintPlacement(Canvas canvas, BlockPlacement p,
-      {required bool selected}) {
+      {required bool selected, bool dim = false}) {
     final def = blocks.blockById(p.blockId);
     if (def == null) {
       // Unknown block: draw a red placeholder so it is visible.
@@ -462,12 +479,21 @@ class _LevelPainter extends CustomPainter {
         Rect.fromLTWH(
             r.x.toDouble(), r.y.toDouble(), r.w.toDouble(), r.h.toDouble()),
         dst,
-        Paint()..filterQuality = FilterQuality.none,
+        Paint()
+          ..filterQuality = FilterQuality.none
+          // Fade blocks that are not on the active layer.
+          ..color = Colors.white.withValues(alpha: dim ? 0.28 : 1.0),
       );
     } else {
       canvas.drawRect(
-          dst, Paint()..color = Colors.blueGrey.withValues(alpha: 0.5));
+          dst,
+          Paint()
+            ..color = Colors.blueGrey.withValues(alpha: dim ? 0.18 : 0.5));
     }
+
+    // Dimmed (inactive-layer) blocks are context only: no selection ring,
+    // no port glyphs.
+    if (dim) return;
 
     if (selected) {
       canvas.drawRect(
@@ -609,5 +635,6 @@ class _LevelPainter extends CustomPainter {
       old.marquee != marquee ||
       old.groupDelta != groupDelta ||
       old.insertMarkers != insertMarkers ||
-      old.spawn != spawn;
+      old.spawn != spawn ||
+      old.activeLayer != activeLayer;
 }

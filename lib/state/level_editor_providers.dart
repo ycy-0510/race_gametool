@@ -133,10 +133,33 @@ class ExtendPreview {
   final List<(int, int)> positions;
 }
 
+/// Editing layers for Phase 2. Only the active layer's blocks are shown
+/// solid and are editable; other layers render dimmed for context. Layers
+/// are independent planes, so blocks on different layers may overlap.
+enum MapLayer {
+  island('Island', {BlockCategory.islandTile}),
+  track('Track', {BlockCategory.track}),
+  decoration('Decoration', {BlockCategory.finishLine}),
+  function('Function', <BlockCategory>{});
+
+  const MapLayer(this.label, this.categories);
+  final String label;
+
+  /// Block categories that belong to this layer.
+  final Set<BlockCategory> categories;
+
+  bool accepts(BlockCategory c) => categories.contains(c);
+
+  /// The layer a category belongs to (track as the safe default).
+  static MapLayer forCategory(BlockCategory c) =>
+      MapLayer.values.firstWhere((l) => l.accepts(c), orElse: () => track);
+}
+
 class LevelEditorState {
   const LevelEditorState({
     this.mapName = 'map_01',
     this.placements = const [],
+    this.activeLayer = MapLayer.track,
     this.tool = LevelTool.stamp,
     this.selectedPaletteId,
     this.selectedPlacementIndex,
@@ -152,6 +175,10 @@ class LevelEditorState {
 
   final String mapName;
   final List<BlockPlacement> placements;
+
+  /// The layer currently being edited.
+  final MapLayer activeLayer;
+
   final LevelTool tool;
 
   /// Palette block chosen for stamping.
@@ -191,6 +218,7 @@ class LevelEditorState {
   LevelEditorState copyWith({
     String? mapName,
     List<BlockPlacement>? placements,
+    MapLayer? activeLayer,
     LevelTool? tool,
     String? Function()? selectedPaletteId,
     int? Function()? selectedPlacementIndex,
@@ -206,6 +234,7 @@ class LevelEditorState {
       LevelEditorState(
         mapName: mapName ?? this.mapName,
         placements: placements ?? this.placements,
+        activeLayer: activeLayer ?? this.activeLayer,
         tool: tool ?? this.tool,
         selectedPaletteId: selectedPaletteId != null
             ? selectedPaletteId()
@@ -242,6 +271,23 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
         p.gridX, p.gridY, def.boundingBox.width, def.boundingBox.height);
   }
 
+  /// The layer a placement lives on (from its block's category).
+  MapLayer? layerOf(BlockPlacement p) {
+    final def = _def(p.blockId);
+    return def == null ? null : MapLayer.forCategory(def.category);
+  }
+
+  /// Whether a placement belongs to the layer currently being edited.
+  bool onActiveLayer(BlockPlacement p) => layerOf(p) == state.activeLayer;
+
+  void setLayer(MapLayer layer) => state = state.copyWith(
+        activeLayer: layer,
+        selectedPlacementIndex: () => null,
+        selection: const {},
+        selectedPaletteId: () => null,
+        statusMessage: () => 'Editing ${layer.label} layer',
+      );
+
   void setTool(LevelTool tool) => state = state.copyWith(tool: tool);
 
   void setStatus(String message) =>
@@ -256,16 +302,18 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   void setHover((int, int)? cell) =>
       state = state.copyWith(hoverCell: () => cell);
 
-  /// Whether a block of [id] placed at (gridX, gridY) would overlap any
-  /// existing placement. Uses bounding boxes (irregular pieces are hollow
-  /// rectangles per the block model).
+  /// Whether a block of [id] placed at (gridX, gridY) would overlap another
+  /// placement ON THE SAME LAYER. Layers are independent planes, so an
+  /// island tile and a track piece may share cells. Uses bounding boxes.
   bool _wouldOverlap(String id, int gridX, int gridY, {int? ignoreIndex}) {
     final def = _def(id);
     if (def == null) return false;
+    final layer = MapLayer.forCategory(def.category);
     final candidate = CellRect(
         gridX, gridY, def.boundingBox.width, def.boundingBox.height);
     for (var i = 0; i < state.placements.length; i++) {
       if (i == ignoreIndex) continue;
+      if (layerOf(state.placements[i]) != layer) continue;
       final other = rectOf(state.placements[i]);
       if (other != null && candidate.overlaps(other)) return true;
     }
@@ -293,11 +341,12 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   (int, int) _portWorldOrigin(BlockPlacement p, Port port) =>
       (p.gridX + port.localGridX, p.gridY + port.localGridY);
 
-  /// Set of all cells covered by placements (for occupancy / free-port
-  /// tests). Recomputed on demand; placement counts here are small.
+  /// Set of cells covered by placements on the active layer (for occupancy
+  /// and free-port tests, which operate within the current layer).
   Set<(int, int)> occupiedCells() {
     final cells = <(int, int)>{};
     for (final p in state.placements) {
+      if (!onActiveLayer(p)) continue;
       final r = rectOf(p);
       if (r == null) continue;
       for (var y = r.y; y < r.y + r.h; y++) {
@@ -370,6 +419,7 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   PortRef? portAt(int cellX, int cellY) {
     for (var i = state.placements.length - 1; i >= 0; i--) {
       final p = state.placements[i];
+      if (!onActiveLayer(p)) continue;
       final def = _def(p.blockId);
       if (def == null) continue;
       for (var j = 0; j < def.ports.length; j++) {
@@ -594,9 +644,12 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
     return (gridX.clamp(0, maxX), gridY.clamp(0, maxY));
   }
 
-  /// Topmost placement whose bounding box contains the cell, or null.
+  /// Topmost placement on the active layer whose bounding box contains the
+  /// cell, or null. Other layers are not selectable/erasable while hidden
+  /// behind the active one.
   int? _placementAt(int gridX, int gridY) {
     for (var i = state.placements.length - 1; i >= 0; i--) {
+      if (!onActiveLayer(state.placements[i])) continue;
       final r = rectOf(state.placements[i]);
       if (r != null && r.contains(gridX, gridY)) return i;
     }
@@ -803,8 +856,10 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
 
   /// Seams eligible for an insert marker: one per boundary (the forward
   /// direction), whose near side has a same-span straight to insert.
-  List<Seam> insertSeams() =>
-      _seams().where((s) => _isForward(s.dir)).toList();
+  List<Seam> insertSeams() => _seams()
+      .where((s) =>
+          _isForward(s.dir) && onActiveLayer(state.placements[s.nearIndex]))
+      .toList();
 
   /// Pixel-centre of each insert seam's boundary, for drawing "+" markers.
   List<(int, int)> insertSeamBoundaryCells() {

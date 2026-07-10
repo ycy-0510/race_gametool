@@ -54,29 +54,41 @@ class DragPreview {
   final int heightCells;
 }
 
+/// A loaded source image for one asset category.
+class CategoryImage {
+  const CategoryImage({
+    required this.bytes,
+    required this.image,
+    required this.name,
+  });
+
+  final Uint8List bytes;
+  final ui.Image image;
+  final String name;
+}
+
 class AssetDefinerState {
   const AssetDefinerState({
-    this.imageBytes,
-    this.image,
-    this.imageName,
-    this.masks = const [],
+    this.images = const {},
+    this.masksByCategory = const {},
+    this.activeCategory = BlockCategory.track,
     this.selectedIndex,
     this.tool = Phase1Tool.drawBox,
     this.dragPreview,
     this.paintPreview,
     this.movePreview,
-    this.newBlockCategory = BlockCategory.track,
     this.statusMessage,
   });
 
-  /// Raw bytes of the loaded draft image (kept for export-time cropping).
-  final Uint8List? imageBytes;
+  /// One source image per category (only those that have been loaded).
+  final Map<BlockCategory, CategoryImage> images;
 
-  /// Decoded image for canvas rendering.
-  final ui.Image? image;
-  final String? imageName;
+  /// Masks per category. Each category is authored on its own image.
+  final Map<BlockCategory, List<MaskDraft>> masksByCategory;
 
-  final List<MaskDraft> masks;
+  /// The category currently being edited (drives the visible image + masks).
+  final BlockCategory activeCategory;
+
   final int? selectedIndex;
   final Phase1Tool tool;
 
@@ -89,47 +101,61 @@ class AssetDefinerState {
   /// Block reposition in progress (Move tool).
   final MovePreview? movePreview;
 
-  /// Category assigned to newly drawn/painted masks.
-  final BlockCategory newBlockCategory;
-
-  /// One-shot feedback line shown in the toolbar (load/export results,
-  /// rejected port placements).
+  /// One-shot feedback line shown in the toolbar.
   final String? statusMessage;
+
+  // --- Active-category views (keep the rest of the editor unchanged) --------
+
+  CategoryImage? get activeImage => images[activeCategory];
+  Uint8List? get imageBytes => activeImage?.bytes;
+  ui.Image? get image => activeImage?.image;
+  String? get imageName => activeImage?.name;
+
+  /// Masks of the active category (what the canvas edits).
+  List<MaskDraft> get masks => masksByCategory[activeCategory] ?? const [];
 
   MaskDraft? get selectedMask =>
       selectedIndex == null ? null : masks[selectedIndex!];
 
-  bool get canExport => imageBytes != null && masks.isNotEmpty;
+  /// All masks across every category, for export.
+  List<MaskDraft> get allMasks =>
+      [for (final c in BlockCategory.values) ...?masksByCategory[c]];
+
+  bool get canExport => BlockCategory.values.any((c) =>
+      images[c] != null && (masksByCategory[c]?.isNotEmpty ?? false));
 
   AssetDefinerState copyWith({
-    Uint8List? imageBytes,
-    ui.Image? image,
-    String? imageName,
+    Map<BlockCategory, CategoryImage>? images,
+    Map<BlockCategory, List<MaskDraft>>? masksByCategory,
     List<MaskDraft>? masks,
+    BlockCategory? activeCategory,
     int? Function()? selectedIndex,
     Phase1Tool? tool,
     DragPreview? Function()? dragPreview,
     Set<Cell>? Function()? paintPreview,
     MovePreview? Function()? movePreview,
-    BlockCategory? newBlockCategory,
     String? Function()? statusMessage,
-  }) =>
-      AssetDefinerState(
-        imageBytes: imageBytes ?? this.imageBytes,
-        image: image ?? this.image,
-        imageName: imageName ?? this.imageName,
-        masks: masks ?? this.masks,
-        selectedIndex:
-            selectedIndex != null ? selectedIndex() : this.selectedIndex,
-        tool: tool ?? this.tool,
-        dragPreview: dragPreview != null ? dragPreview() : this.dragPreview,
-        paintPreview:
-            paintPreview != null ? paintPreview() : this.paintPreview,
-        movePreview: movePreview != null ? movePreview() : this.movePreview,
-        newBlockCategory: newBlockCategory ?? this.newBlockCategory,
-        statusMessage:
-            statusMessage != null ? statusMessage() : this.statusMessage,
-      );
+  }) {
+    final category = activeCategory ?? this.activeCategory;
+    var nextMasks = masksByCategory ?? this.masksByCategory;
+    // The `masks` convenience param writes to the active category's list.
+    if (masks != null) {
+      nextMasks = {...nextMasks, category: masks};
+    }
+    return AssetDefinerState(
+      images: images ?? this.images,
+      masksByCategory: nextMasks,
+      activeCategory: category,
+      selectedIndex:
+          selectedIndex != null ? selectedIndex() : this.selectedIndex,
+      tool: tool ?? this.tool,
+      dragPreview: dragPreview != null ? dragPreview() : this.dragPreview,
+      paintPreview: paintPreview != null ? paintPreview() : this.paintPreview,
+      movePreview: movePreview != null ? movePreview() : this.movePreview,
+      statusMessage:
+          statusMessage != null ? statusMessage() : this.statusMessage,
+    );
+  }
 }
 
 class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
@@ -140,41 +166,25 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
   @override
   AssetDefinerState build() => const AssetDefinerState();
 
-  Future<void> loadImage() async {
-    final result = await FilePicker.pickFiles(
-      dialogTitle: 'Load draft image',
-      type: FileType.image,
-      withData: true,
+  void setActiveCategory(BlockCategory category) {
+    state = state.copyWith(
+      activeCategory: category,
+      selectedIndex: () => null,
+      dragPreview: () => null,
+      paintPreview: () => null,
+      movePreview: () => null,
+      tool: category == BlockCategory.islandTile ? Phase1Tool.drawBox : state.tool,
+      statusMessage: () => 'Editing ${category.jsonValue}',
     );
-    final bytes = result?.files.single.bytes;
-    if (bytes == null) return;
-
-    final completer = Completer<ui.Image>();
-    ui.decodeImageFromList(bytes, completer.complete);
-    final image = await completer.future;
-
-    state = AssetDefinerState(
-      imageBytes: bytes,
-      image: image,
-      imageName: result!.files.single.name,
-      tool: Phase1Tool.drawBox,
-      statusMessage:
-          'Loaded ${result.files.single.name} (${image.width} x ${image.height} px)',
-    );
-    _nextBlockNumber = 1;
   }
 
-  /// Replaces the underlying draft art while keeping all masks and ports.
-  /// Use this when the artist re-exports the sheet but the layout is
-  /// unchanged: no re-masking needed. Masks that fall outside a smaller
-  /// image are kept but reported, so nothing is silently lost.
-  Future<void> swapImage() async {
-    if (state.image == null) {
-      await loadImage();
-      return;
-    }
+  /// Loads (or replaces) the image for the active category, keeping that
+  /// category's existing masks. Replaces the old separate Load + Swap: a
+  /// category with no image yet just gets one; re-loading updates the art
+  /// and reports any masks that fall outside a smaller image.
+  Future<void> loadImage() async {
     final result = await FilePicker.pickFiles(
-      dialogTitle: 'Swap draft image (keeps masks and ports)',
+      dialogTitle: 'Load image for ${state.activeCategory.jsonValue}',
       type: FileType.image,
       withData: true,
     );
@@ -184,7 +194,9 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final completer = Completer<ui.Image>();
     ui.decodeImageFromList(bytes, completer.complete);
     final image = await completer.future;
+    final name = result!.files.single.name;
 
+    final hadImage = state.activeImage != null;
     final cols = (image.width / GridConstants.cellSize).ceil();
     final rows = (image.height / GridConstants.cellSize).ceil();
     final outOfBounds = state.masks
@@ -194,17 +206,21 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
         .toList();
 
     state = state.copyWith(
-      imageBytes: bytes,
-      image: image,
-      imageName: result!.files.single.name,
+      images: {
+        ...state.images,
+        state.activeCategory:
+            CategoryImage(bytes: bytes, image: image, name: name),
+      },
+      tool: Phase1Tool.drawBox,
       dragPreview: () => null,
       paintPreview: () => null,
       movePreview: () => null,
-      statusMessage: () => outOfBounds.isEmpty
-          ? 'Swapped image to ${result.files.single.name}, kept '
-              '${state.masks.length} blocks'
-          : 'Swapped image; ${outOfBounds.length} block(s) now out of '
-              'bounds: ${outOfBounds.join(', ')} (move or delete them)',
+      statusMessage: () => !hadImage
+          ? 'Loaded $name (${image.width} x ${image.height} px)'
+          : outOfBounds.isEmpty
+              ? 'Replaced image with $name, kept ${state.masks.length} blocks'
+              : 'Replaced image; ${outOfBounds.length} block(s) now out of '
+                  'bounds: ${outOfBounds.join(', ')}',
     );
   }
 
@@ -277,6 +293,13 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     if (anchor == null) return;
     var x = cellX;
     var y = cellY;
+
+    if (state.tool == Phase1Tool.drawBox &&
+        state.activeCategory == BlockCategory.islandTile) {
+      x = anchor.x;
+      y = anchor.y;
+    }
+
     if (clampToStrip) {
       // Port marquees are one row or one column: collapse the minor axis.
       if ((cellX - anchor.x).abs() >= (cellY - anchor.y).abs()) {
@@ -351,7 +374,16 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
               gridX: cellX, gridY: cellY, widthCells: 1, heightCells: 1),
         );
         _commitPortStrip();
-      case Phase1Tool.drawBox || Phase1Tool.paintMask:
+      case Phase1Tool.drawBox:
+        if (state.activeCategory == BlockCategory.islandTile) {
+          state = state.copyWith(
+            dragPreview: () => DragPreview(
+                gridX: cellX, gridY: cellY, widthCells: 1, heightCells: 1),
+          );
+          _commitBox();
+        }
+        break;
+      case Phase1Tool.paintMask:
         break;
     }
   }
@@ -365,7 +397,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       gridY: preview.gridY,
       widthCells: preview.widthCells,
       heightCells: preview.heightCells,
-      category: state.newBlockCategory,
+      category: state.activeCategory,
     );
     state = state.copyWith(
       masks: [...state.masks, mask],
@@ -436,7 +468,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final mask = MaskDraft.fromCells(
       id: 'block_${_nextBlockNumber++}',
       absoluteCells: cells,
-      category: state.newBlockCategory,
+      category: state.activeCategory,
     );
     state = state.copyWith(
       masks: [...state.masks, mask],
@@ -532,10 +564,6 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
   void renameMask(int index, String id) =>
       _updateMask(index, state.masks[index].copyWith(id: id));
 
-  /// Category applied to newly drawn/painted masks.
-  void setNewBlockCategory(BlockCategory category) =>
-      state = state.copyWith(newBlockCategory: category);
-
   void setMaskCategory(int index, BlockCategory category) {
     // Corner marking only applies to island tiles; reset it otherwise.
     _updateMask(
@@ -564,6 +592,11 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     _updateMask(maskIndex, mask.copyWith(ports: ports));
   }
 
+  void addPort(int maskIndex, Port port) {
+    final mask = state.masks[maskIndex];
+    _updateMask(maskIndex, mask.copyWith(ports: [...mask.ports, port]));
+  }
+
   void removePort(int maskIndex, int portIndex) {
     final mask = state.masks[maskIndex];
     final ports = [...mask.ports]..removeAt(portIndex);
@@ -582,9 +615,11 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
   /// state (masks and ports), and the derived packed sheet plus sprite
   /// dictionary. Also hands the freshly packed assets to the shared
   /// library so Phase 2 sees them without a reload.
+  ///
+  /// With the multi-category image architecture, each category's masks are
+  /// exported using that category's own source image.
   Future<void> saveBundle() async {
-    final bytes = state.imageBytes;
-    if (bytes == null || state.masks.isEmpty) return;
+    if (!state.canExport) return;
 
     final duplicateIds = _findDuplicateIds();
     if (duplicateIds.isNotEmpty) {
@@ -594,12 +629,22 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       return;
     }
 
+    // Collect per-category raw images for the multi-source export.
+    final categoryImages = <BlockCategory, Uint8List>{};
+    for (final c in BlockCategory.values) {
+      final catImage = state.images[c];
+      final catMasks = state.masksByCategory[c];
+      if (catImage != null && catMasks != null && catMasks.isNotEmpty) {
+        categoryImages[c] = catImage.bytes;
+      }
+    }
+
     final Uint8List bundleBytes;
     try {
       bundleBytes = writeAssetBundle(
-        rawImageBytes: bytes,
+        categoryImages: categoryImages,
         imageName: state.imageName ?? 'draft.png',
-        masks: state.masks,
+        masks: state.allMasks,
       );
     } on Object catch (e) {
       state = state.copyWith(statusMessage: () => 'Save failed: $e');
@@ -634,7 +679,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
 
     state = state.copyWith(
       statusMessage: () =>
-          'Saved ${state.masks.length} blocks to $path (available in Phase 2)',
+          'Saved ${state.allMasks.length} blocks to $path (available in Phase 2)',
     );
   }
 
@@ -677,15 +722,46 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       return;
     }
 
+    // Decode the raw source image for the canvas editor.
     final completer = Completer<ui.Image>();
     ui.decodeImageFromList(data.rawImageBytes, completer.complete);
     final image = await completer.future;
 
+    // Group masks by category and build per-category image map.
+    // When opening a v1 bundle, all masks share the same source image.
+    // We assign each category's masks to the shared raw source image.
+    final groupedMasks = <BlockCategory, List<MaskDraft>>{};
+    for (final mask in data.masks) {
+      groupedMasks.putIfAbsent(mask.category, () => []).add(mask);
+    }
+    final images = <BlockCategory, CategoryImage>{};
+    // Also decode per-category images if the bundle provides them.
+    if (data.categoryRawImages.isNotEmpty) {
+      for (final entry in data.categoryRawImages.entries) {
+        final c = Completer<ui.Image>();
+        ui.decodeImageFromList(entry.value, c.complete);
+        images[entry.key] = CategoryImage(
+          bytes: entry.value,
+          image: await c.future,
+          name: data.imageName,
+        );
+      }
+    } else {
+      // Legacy single-image bundle: share the raw source across all
+      // categories that have masks.
+      for (final cat in groupedMasks.keys) {
+        images[cat] = CategoryImage(
+          bytes: data.rawImageBytes,
+          image: image,
+          name: data.imageName,
+        );
+      }
+    }
+
     state = AssetDefinerState(
-      imageBytes: data.rawImageBytes,
-      image: image,
-      imageName: data.imageName,
-      masks: data.masks,
+      images: images,
+      masksByCategory: groupedMasks,
+      activeCategory: groupedMasks.keys.first,
       tool: Phase1Tool.select,
       statusMessage: 'Opened $sourceName (${data.masks.length} blocks)',
     );

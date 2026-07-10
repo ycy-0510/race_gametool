@@ -10,7 +10,7 @@ import 'mask_canvas.dart';
 String categoryLabel(BlockCategory c) => switch (c) {
       BlockCategory.track => 'Track',
       BlockCategory.islandTile => 'Island',
-      BlockCategory.startLine => 'Start Line',
+      BlockCategory.finishLine => 'Finish Line',
     };
 
 /// Phase 1: load a raw draft image, mask track pieces with bounding boxes,
@@ -27,8 +27,49 @@ class AssetDefinerPage extends ConsumerWidget {
 
     return Column(
       children: [
-        // Toolbar. A Wrap keeps the controls from overflowing on narrow
-        // windows, flowing onto a second line instead.
+        // Category tabs — Track / Island / Finish Line
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: Row(
+            children: [
+              Text('Category: ', style: theme.textTheme.labelMedium),
+              const SizedBox(width: 4),
+              SegmentedButton<BlockCategory>(
+                showSelectedIcon: false,
+                segments: [
+                  for (final c in BlockCategory.values)
+                    ButtonSegment(
+                      value: c,
+                      label: Text(categoryLabel(c)),
+                    ),
+                ],
+                selected: {state.activeCategory},
+                onSelectionChanged: (selection) =>
+                    notifier.setActiveCategory(selection.first),
+              ),
+              const SizedBox(width: 12),
+              // Show which image is loaded for this category, if any.
+              if (state.activeImage != null)
+                Expanded(
+                  child: Text(
+                    '📷 ${state.imageName}',
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                )
+              else
+                Expanded(
+                  child: Text(
+                    'No image loaded for ${categoryLabel(state.activeCategory)}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.outline,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        // Toolbar
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Wrap(
@@ -39,12 +80,9 @@ class AssetDefinerPage extends ConsumerWidget {
               FilledButton.tonalIcon(
                 onPressed: notifier.loadImage,
                 icon: const Icon(Icons.image_outlined, size: 18),
-                label: const Text('Load Image'),
-              ),
-              OutlinedButton.icon(
-                onPressed: state.image == null ? null : notifier.swapImage,
-                icon: const Icon(Icons.swap_horiz, size: 18),
-                label: const Text('Swap Image'),
+                label: Text(state.activeImage == null
+                    ? 'Load Image'
+                    : 'Replace Image'),
               ),
               OutlinedButton.icon(
                 onPressed: notifier.openBundle,
@@ -55,39 +93,24 @@ class AssetDefinerPage extends ConsumerWidget {
                 showSelectedIcon: false,
                 segments: [
                   for (final tool in Phase1Tool.values)
-                    ButtonSegment(
-                      value: tool,
-                      tooltip: tool.label,
-                      icon: Icon(switch (tool) {
-                        Phase1Tool.select => Icons.near_me_outlined,
-                        Phase1Tool.move => Icons.open_with,
-                        Phase1Tool.drawBox => Icons.crop_square,
-                        Phase1Tool.paintMask => Icons.brush_outlined,
-                        Phase1Tool.addPort => Icons.adjust,
-                      }),
-                    ),
+                    if (state.activeCategory != BlockCategory.islandTile ||
+                        (tool != Phase1Tool.paintMask &&
+                            tool != Phase1Tool.addPort))
+                      ButtonSegment(
+                        value: tool,
+                        tooltip: tool.label,
+                        icon: Icon(switch (tool) {
+                          Phase1Tool.select => Icons.near_me_outlined,
+                          Phase1Tool.move => Icons.open_with,
+                          Phase1Tool.drawBox => Icons.crop_square,
+                          Phase1Tool.paintMask => Icons.brush_outlined,
+                          Phase1Tool.addPort => Icons.adjust,
+                        }),
+                      ),
                 ],
                 selected: {state.tool},
                 onSelectionChanged: (selection) =>
                     notifier.setTool(selection.first),
-              ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('New: '),
-                  DropdownButton<BlockCategory>(
-                    value: state.newBlockCategory,
-                    isDense: true,
-                    items: [
-                      for (final c in BlockCategory.values)
-                        DropdownMenuItem(
-                            value: c, child: Text(categoryLabel(c))),
-                    ],
-                    onChanged: (c) {
-                      if (c != null) notifier.setNewBlockCategory(c);
-                    },
-                  ),
-                ],
               ),
               FilledButton.icon(
                 onPressed: state.canExport ? notifier.saveBundle : null,
@@ -132,8 +155,8 @@ class AssetDefinerPage extends ConsumerWidget {
                                   color: theme.colorScheme.outline),
                               const SizedBox(height: 12),
                               Text(
-                                'Load a raw draft image, then drag boxes '
-                                'over each track piece',
+                                'Load a ${categoryLabel(state.activeCategory)} '
+                                'image, then drag boxes over each piece',
                                 style: theme.textTheme.bodyLarge,
                               ),
                             ],
@@ -151,3 +174,4 @@ class AssetDefinerPage extends ConsumerWidget {
     );
   }
 }
+
