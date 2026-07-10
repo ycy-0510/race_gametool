@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'state/file_open_service.dart';
 import 'ui/app_shell.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
 
@@ -20,7 +21,14 @@ Future<void> main() async {
     await windowManager.focus();
   });
 
-  runApp(const ProviderScope(child: RaceGameToolApp()));
+  runApp(
+    ProviderScope(
+      overrides: [
+        launchArgumentsProvider.overrideWithValue(args),
+      ],
+      child: const RaceGameToolApp(),
+    ),
+  );
 }
 
 class RaceGameToolApp extends StatelessWidget {

@@ -74,6 +74,28 @@ class FileOpenService {
     } on MissingPluginException {
       debugPrint('FileOpenChannel: MissingPluginException');
     }
+
+    // Handle command-line launch arguments (specifically for Windows/Linux double-click starts)
+    final launchArgs = _ref.read(launchArgumentsProvider);
+    if (launchArgs.isNotEmpty) {
+      final fileArg = launchArgs.first;
+      if (fileArg.endsWith('.rgpack')) {
+        debugPrint('FileOpenChannel: found launch argument: $fileArg');
+        bool proceed = true;
+        if (_onOpenRequest != null) {
+          try {
+            proceed = await _onOpenRequest!();
+          } catch (e, stack) {
+            debugPrint('FileOpenChannel: error in onOpenRequest for argument: $e\n$stack');
+            proceed = true;
+          }
+        }
+        if (proceed) {
+          debugPrint('FileOpenChannel: opening launch argument file $fileArg');
+          await _open(fileArg);
+        }
+      }
+    }
   }
 
   Future<void> _open(String path) async {
@@ -91,3 +113,6 @@ class FileOpenService {
 /// Created once and kept alive for the app's lifetime.
 final fileOpenServiceProvider =
     Provider<FileOpenService>((ref) => FileOpenService(ref));
+
+/// Command-line arguments passed to the application at launch (specifically for Windows/Linux).
+final launchArgumentsProvider = Provider<List<String>>((ref) => const []);
