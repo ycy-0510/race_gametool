@@ -14,7 +14,7 @@ import '../widgets/port_marker.dart';
 /// InteractiveViewer, overlaid with the 16 px grid, mask shapes, ports,
 /// and drag previews. Gestures are interpreted according to the active
 /// Phase1Tool.
-class MaskCanvas extends ConsumerWidget {
+class MaskCanvas extends ConsumerStatefulWidget {
   const MaskCanvas({super.key});
 
   static const _dragTools = {
@@ -25,7 +25,21 @@ class MaskCanvas extends ConsumerWidget {
   };
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<MaskCanvas> createState() => _MaskCanvasState();
+}
+
+class _MaskCanvasState extends ConsumerState<MaskCanvas> {
+  final TransformationController _transform = TransformationController();
+  ui.Image? _lastImage;
+
+  @override
+  void dispose() {
+    _transform.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(assetDefinerProvider);
     final image = state.image;
     if (image == null) {
@@ -33,7 +47,32 @@ class MaskCanvas extends ConsumerWidget {
     }
     final notifier = ref.read(assetDefinerProvider.notifier);
     const cell = GridConstants.cellSize;
-    final usesDrag = _dragTools.contains(state.tool);
+    final usesDrag = MaskCanvas._dragTools.contains(state.tool);
+
+    if (_lastImage != image) {
+      _lastImage = image;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final box = context.findRenderObject() as RenderBox?;
+        if (box == null || !box.hasSize) return;
+
+        final imageW = image.width.toDouble();
+        final imageH = image.height.toDouble();
+        final viewportW = box.size.width;
+        final viewportH = box.size.height;
+
+        final scale = math.min(viewportW / imageW, viewportH / imageH).clamp(0.15, 12.0);
+        final tx = (viewportW - imageW * scale) / 2;
+        final ty = (viewportH - imageH * scale) / 2;
+
+        final matrix = Matrix4.identity();
+        matrix.setEntry(0, 0, scale);
+        matrix.setEntry(1, 1, scale);
+        matrix.setEntry(0, 3, tx);
+        matrix.setEntry(1, 3, ty);
+        _transform.value = matrix;
+      });
+    }
 
     (int, int) toCell(Offset local) => (
           (local.dx / cell).floor().clamp(0, (image.width / cell).ceil() - 1),
@@ -41,6 +80,7 @@ class MaskCanvas extends ConsumerWidget {
         );
 
     return InteractiveViewer(
+      transformationController: _transform,
       constrained: false,
       minScale: 0.15,
       maxScale: 12,

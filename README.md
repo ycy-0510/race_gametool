@@ -23,10 +23,10 @@ A new Flutter project.
 - [X] Undo
 - [X] Confirm before clear all
 - [X] Use window manager to create a desktop app with a custom window frame.
-- [ ] Import map
+- [X] Import map
 - [ ] Auto resize in phase 1
 - [ ] Drag to stamp in phase 2
 - [ ] Remove insert and remove to close in phase 2/track
 - [ ] More accuracy in trackpad guesture / tool change automatically
-- [ ] Fix: autofill, clear.
-- [ ] Add icon
+- [X] Fix: autofill, clear.
+- [X] Add icon

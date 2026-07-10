@@ -31,6 +31,8 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
 
   final TransformationController _transform = TransformationController();
   bool _centered = false;
+  (int, int)? _dragStartCell;
+  Axis? _dragLockedAxis;
 
   @override
   void initState() {
@@ -206,8 +208,8 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
       }
     }
 
-    void handleDrag(Offset local) {
-      final (x, y) = _toCell(local);
+    void handleDragCell((int, int) cell) {
+      final (x, y) = cell;
       if (state.tool == LevelTool.stamp) {
         if (state.activeLayer == MapLayer.island) {
           notifier.paintGrassAt(x, y, erase: false);
@@ -220,8 +222,6 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
         } else {
           notifier.eraseAt(x, y);
         }
-      } else if (state.tool == LevelTool.multi) {
-        notifier.multiDragUpdate(x, y);
       }
     }
 
@@ -250,14 +250,48 @@ class _LevelCanvasState extends ConsumerState<LevelCanvas> {
                   if (state.tool == LevelTool.multi) {
                     notifier.multiDragStart(x, y);
                   } else {
-                    handleDrag(d.localPosition);
+                    _dragStartCell = (x, y);
+                    _dragLockedAxis = null;
+                    handleDragCell((x, y));
                   }
                 },
-          onPanUpdate: !usesDrag ? null : (d) => handleDrag(d.localPosition),
-          onPanEnd: state.tool != LevelTool.multi
+          onPanUpdate: !usesDrag
               ? null
-              : (_) => notifier.multiDragEnd(
-                  cols: LevelCanvas.cols, rows: LevelCanvas.rows),
+              : (d) {
+                  final (x, y) = _toCell(d.localPosition);
+                  if (state.tool == LevelTool.multi) {
+                    notifier.multiDragUpdate(x, y);
+                  } else {
+                    final start = _dragStartCell;
+                    if (start != null) {
+                      var cx = x;
+                      var cy = y;
+                      if (_dragLockedAxis == null) {
+                        final dx = (cx - start.$1).abs();
+                        final dy = (cy - start.$2).abs();
+                        if (dx >= dy && dx > 0) {
+                          _dragLockedAxis = Axis.horizontal;
+                        } else if (dy > dx && dy > 0) {
+                          _dragLockedAxis = Axis.vertical;
+                        }
+                      }
+                      if (_dragLockedAxis == Axis.horizontal) {
+                        cy = start.$2;
+                      } else if (_dragLockedAxis == Axis.vertical) {
+                        cx = start.$1;
+                      }
+                      handleDragCell((cx, cy));
+                    }
+                  }
+                },
+          onPanEnd: (_) {
+            _dragStartCell = null;
+            _dragLockedAxis = null;
+            if (state.tool == LevelTool.multi) {
+              notifier.multiDragEnd(
+                  cols: LevelCanvas.cols, rows: LevelCanvas.rows);
+            }
+          },
           child: CustomPaint(
             size: const Size(
                 LevelCanvas.cols * _cell, LevelCanvas.rows * _cell),
