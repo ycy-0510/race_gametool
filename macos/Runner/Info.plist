@@ -35,6 +35,8 @@
 			<string>Race Game Asset Bundle</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
+			<key>CFBundleTypeIconFile</key>
+			<string>AppIcon</string>
 			<key>LSHandlerRank</key>
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
@@ -61,6 +63,11 @@
 				<array>
 					<string>rgpack</string>
 				</array>
+			</dict>
+			<key>UTTypeIcons</key>
+			<dict>
+				<key>UTTypeIconName</key>
+				<string>AppIcon</string>
 			</dict>
 		</dict>
 	</array>
