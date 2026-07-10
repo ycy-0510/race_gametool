@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../logic/island_tiles.dart';
 import '../../models/block_def.dart';
 import '../../models/mask_draft.dart';
 import '../../models/port.dart';
@@ -100,6 +101,76 @@ class InspectorPanel extends ConsumerWidget {
     );
   }
 
+  /// Tally of the authored island tiles by kind, plus whether the basic
+  /// (convex) and advanced (concave) auto-generators have a full tile set.
+  Widget _buildIslandStats(List<MaskDraft> islandMasks, ThemeData theme) {
+    final stats = computeIslandStats(islandMasks);
+    const kindOrder = [
+      'Interior',
+      'Edge',
+      'Convex corner',
+      'Concave corner',
+      'Other',
+    ];
+    Widget statusChip(String label, bool ready) => Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(ready ? Icons.check_circle : Icons.cancel,
+                size: 15,
+                color: ready ? Colors.greenAccent : theme.colorScheme.outline),
+            const SizedBox(width: 4),
+            Text(label, style: theme.textTheme.bodySmall),
+          ],
+        );
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Island tiles: ${stats.total}',
+              style: theme.textTheme.titleSmall),
+          const SizedBox(height: 6),
+          for (final kind in kindOrder)
+            if ((stats.countByKind[kind] ?? 0) > 0)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 1),
+                child: Text('$kind: ${stats.countByKind[kind]}',
+                    style: theme.textTheme.bodySmall),
+              ),
+          const Divider(height: 14),
+          statusChip(
+            stats.convexComplete
+                ? 'Auto generator ready (convex set complete)'
+                : 'Basic generator: missing ${stats.missingConvex.toSet().join(", ")}',
+            stats.convexComplete,
+          ),
+          const SizedBox(height: 4),
+          statusChip(
+            stats.concaveComplete
+                ? 'Advanced (concave islands) ready'
+                : 'Advanced: missing concave corners',
+            stats.concaveComplete,
+          ),
+          if (stats.duplicated.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              '${stats.duplicated.length} kind(s) have duplicates '
+              '(generator picks one at random)',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.outline),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(assetDefinerProvider);
@@ -115,6 +186,8 @@ class InspectorPanel extends ConsumerWidget {
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Text('Inspector', style: theme.textTheme.titleMedium),
         ),
+        if (state.activeCategory == BlockCategory.islandTile)
+          _buildIslandStats(state.masks, theme),
         if (mask == null || selectedIndex == null)
           Padding(
             padding: const EdgeInsets.all(16),
