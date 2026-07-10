@@ -454,6 +454,9 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
 
     final candidates = <ConnectCandidate>[];
     for (final def in _blocks) {
+      // Ports are isolated per layer: only offer blocks of the layer being
+      // edited, so a track port never connects to an island tile.
+      if (MapLayer.forCategory(def.category) != state.activeLayer) continue;
       for (var j = 0; j < def.ports.length; j++) {
         final bPort = def.ports[j];
         final canFace = portOutwardDirections(def, bPort).contains(needed);
@@ -491,11 +494,27 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
     );
   }
 
-  /// Whether [def] can continue a straight run toward [hit.outward] with
-  /// the same span as the source port: it needs a port that faces the
-  /// continue direction (a pass-through single port, or the far port of a
-  /// symmetric two-port straight).
+  /// A block is a straight tile if it is a plain two-way segment: either a
+  /// single bidirectional (pass-through) port, or exactly two ports that
+  /// are symmetric -- opposite directions with the same span. Corners,
+  /// forks and junctions are excluded, so only straights auto-extend.
+  bool _isStraightTile(BlockDef def) {
+    if (def.ports.length == 1) {
+      return portIsPassThrough(def, def.ports.first);
+    }
+    if (def.ports.length == 2) {
+      final a = def.ports[0];
+      final b = def.ports[1];
+      return a.span == b.span && a.direction == b.direction.opposite;
+    }
+    return false;
+  }
+
+  /// Whether [def] is a straight tile that can continue a run toward
+  /// [hit.outward] with the same span as the source port. Only true
+  /// straights (see [_isStraightTile]) place many at once.
   bool _isStraightExtender(BlockDef def, ConnectHit hit) {
+    if (!_isStraightTile(def)) return false;
     final sourceDef = _def(state.placements[hit.ref.placementIndex].blockId);
     if (sourceDef == null) return false;
     final span = sourceDef.ports[hit.ref.portIndex].span;
@@ -895,6 +914,9 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   /// (dir), both of matching span. Returns the block and its near-port index.
   (BlockDef, int)? _straightConnector(PortDirection dir, int span) {
     for (final def in _blocks) {
+      // Same-layer isolation: only bridge with blocks of the active layer.
+      if (MapLayer.forCategory(def.category) != state.activeLayer) continue;
+      if (!_isStraightTile(def)) continue;
       final nearIdx = def.ports.indexWhere((p) =>
           p.span == span &&
           portOutwardDirections(def, p).contains(dir.opposite));

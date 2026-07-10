@@ -66,6 +66,9 @@ List<Seam> findSeams(
         if (owners.length != 1 || owners.first == -1) continue;
         final j = owners.first;
         final ndef = defOf(placements[j].blockId)!;
+        // Ports are isolated per asset family: a seam only forms between two
+        // blocks of the same category (island tiles never seam to track).
+        if (ndef.category != def.category) continue;
         final np = placements[j];
         final target = outward.toSet();
 

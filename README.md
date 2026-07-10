@@ -8,6 +8,7 @@ A new Flutter project.
     - [x] Decoration layer (finish line and other decoration)
     - [x] Track layer
     - [x] Island layer
+- [ ] 2 Line align to cursor: vertical/horizontal
 - [ ] Auto island generation.
     - [x] Mark island tiles with 8-direction ports (interior has all 4 diagonals; a concave corner has no diagonal pointing into the notch).
     - [x] In the island Phase 1 page, tally tiles by kind and report set completeness.
