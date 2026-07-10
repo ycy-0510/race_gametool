@@ -746,10 +746,13 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
   (int, int)? _multiAnchor;
   bool _multiMoving = false;
 
-  /// Placements whose bounding box intersects the cell rectangle.
+  /// Placements ON THE ACTIVE LAYER whose bounding box intersects the cell
+  /// rectangle. Marquee selection never spans layers, so moving track never
+  /// drags island tiles.
   Set<int> _placementsInRect(CellRect area) {
     final hit = <int>{};
     for (var i = 0; i < state.placements.length; i++) {
+      if (!onActiveLayer(state.placements[i])) continue;
       final r = rectOf(state.placements[i]);
       if (r != null && r.overlaps(area)) hit.add(i);
     }
@@ -837,10 +840,13 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
       movedRects[i] =
           CellRect(nx, ny, def.boundingBox.width, def.boundingBox.height);
     }
-    // Reject if any moved block lands on a non-selected block.
+    // Reject only if a moved block lands on a non-selected block ON THE
+    // SAME LAYER; overlapping another layer (e.g. island under track) is
+    // fine since layers are independent planes.
     for (final entry in movedRects.entries) {
       for (var j = 0; j < state.placements.length; j++) {
         if (sel.contains(j)) continue;
+        if (!onActiveLayer(state.placements[j])) continue;
         final other = rectOf(state.placements[j]);
         if (other != null && entry.value.overlaps(other)) {
           state = state.copyWith(
@@ -929,8 +935,12 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
     return null;
   }
 
+  /// Validates a proposed placement list after an insert/delete shift.
+  /// Overlap is only a conflict WITHIN a layer (category); an island tile
+  /// sitting under a track piece is expected and ignored.
   String? _validateLayout(List<BlockPlacement> list) {
     final rects = <CellRect>[];
+    final layers = <MapLayer?>[];
     for (final p in list) {
       final def = _def(p.blockId);
       if (def == null) continue;
@@ -942,10 +952,13 @@ class LevelEditorNotifier extends Notifier<LevelEditorState> {
       }
       rects.add(CellRect(
           p.gridX, p.gridY, def.boundingBox.width, def.boundingBox.height));
+      layers.add(MapLayer.forCategory(def.category));
     }
     for (var a = 0; a < rects.length; a++) {
       for (var b = a + 1; b < rects.length; b++) {
-        if (rects[a].overlaps(rects[b])) return 'Shift would overlap blocks';
+        if (layers[a] == layers[b] && rects[a].overlaps(rects[b])) {
+          return 'Shift would overlap blocks';
+        }
       }
     }
     return null;

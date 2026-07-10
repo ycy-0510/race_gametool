@@ -31,15 +31,17 @@ List<Seam> findSeams(
   List<BlockPlacement> placements,
   BlockDef? Function(String id) defOf,
 ) {
-  // Map each occupied cell to its placement index for neighbour lookup.
-  final owner = <(int, int), int>{};
+  // Map each occupied cell to its placement index PER CATEGORY. Seams are
+  // same-category, and layers overlap (an island tile may share a track
+  // cell), so a single global owner map would let one family hide another.
+  final owner = <(int, int), Map<BlockCategory, int>>{};
   for (var i = 0; i < placements.length; i++) {
     final def = defOf(placements[i].blockId);
     if (def == null) continue;
     final p = placements[i];
     for (var y = 0; y < def.boundingBox.height; y++) {
       for (var x = 0; x < def.boundingBox.width; x++) {
-        owner[(p.gridX + x, p.gridY + y)] = i;
+        (owner[(p.gridX + x, p.gridY + y)] ??= {})[def.category] = i;
       }
     }
   }
@@ -53,10 +55,11 @@ List<Seam> findSeams(
       final port = def.ports[pi];
       for (final dir in portOutwardDirections(def, port)) {
         final outward = portOutwardCells(p.gridX, p.gridY, port, dir);
-        // All outward cells must belong to one single neighbour.
+        // All outward cells must belong to one single same-category
+        // neighbour (island tiles never seam to track, even when overlapping).
         final owners = <int>{};
         for (final c in outward) {
-          final o = owner[c];
+          final o = owner[c]?[def.category];
           if (o == null || o == i) {
             owners.add(-1);
           } else {
@@ -66,9 +69,6 @@ List<Seam> findSeams(
         if (owners.length != 1 || owners.first == -1) continue;
         final j = owners.first;
         final ndef = defOf(placements[j].blockId)!;
-        // Ports are isolated per asset family: a seam only forms between two
-        // blocks of the same category (island tiles never seam to track).
-        if (ndef.category != def.category) continue;
         final np = placements[j];
         final target = outward.toSet();
 
