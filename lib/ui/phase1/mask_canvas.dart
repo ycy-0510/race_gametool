@@ -20,12 +20,13 @@ import '../widgets/port_marker.dart';
 class MaskCanvas extends ConsumerStatefulWidget {
   const MaskCanvas({super.key});
 
+  // The physics-area tool is tap-only (append/undo/complete by clicking), so
+  // it deliberately stays out of this set: no left-drag recognizer.
   static const _dragTools = {
     Phase1Tool.drawBox,
     Phase1Tool.paintMask,
     Phase1Tool.addPort,
     Phase1Tool.move,
-    Phase1Tool.drawPhysicsArea,
   };
 
   @override
@@ -124,7 +125,7 @@ class _MaskCanvasState extends ConsumerState<MaskCanvas> {
       autofocus: true,
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent) {
-          if (state.tool == Phase1Tool.drawPhysicsArea) {
+          if (state.tool == Phase1Tool.drawPhysicsArea && state.physicsDrawing) {
             final isCmdZ = event.logicalKey == LogicalKeyboardKey.keyZ &&
                 (HardwareKeyboard.instance.isMetaPressed || HardwareKeyboard.instance.isControlPressed);
             if (isCmdZ) {
@@ -138,7 +139,7 @@ class _MaskCanvasState extends ConsumerState<MaskCanvas> {
               notifier.undoPhysicsAreaVertex();
               return KeyEventResult.handled;
             } else if (event.logicalKey == LogicalKeyboardKey.escape) {
-              notifier.clearPhysicsArea();
+              notifier.cancelPhysicsArea();
               return KeyEventResult.handled;
             }
           }
@@ -205,29 +206,15 @@ class _MaskCanvasState extends ConsumerState<MaskCanvas> {
                   (LeftClickPanGestureRecognizer instance) {
                     instance
                       ..onStart = (details) {
-                        if (state.tool == Phase1Tool.drawPhysicsArea) {
-                          final snapped = _getSnappedOffset(details.localPosition, cell, state.snapToGrid);
-                          notifier.trackAreaDragStart(snapped);
-                        } else {
-                          final (x, y) = toCell(details.localPosition);
-                          notifier.dragStart(x, y);
-                        }
+                        final (x, y) = toCell(details.localPosition);
+                        notifier.dragStart(x, y);
                       }
                       ..onUpdate = (details) {
-                        if (state.tool == Phase1Tool.drawPhysicsArea) {
-                          final snapped = _getSnappedOffset(details.localPosition, cell, state.snapToGrid);
-                          notifier.trackAreaDragUpdate(snapped);
-                        } else {
-                          final (x, y) = toCell(details.localPosition);
-                          notifier.dragUpdate(x, y);
-                        }
+                        final (x, y) = toCell(details.localPosition);
+                        notifier.dragUpdate(x, y);
                       }
                       ..onEnd = (_) {
-                        if (state.tool == Phase1Tool.drawPhysicsArea) {
-                          notifier.trackAreaDragEnd();
-                        } else {
-                          notifier.dragEnd();
-                        }
+                        notifier.dragEnd();
                       };
                   },
                 ),
@@ -250,7 +237,8 @@ class _MaskCanvasState extends ConsumerState<MaskCanvas> {
             },
             child: MouseRegion(
               onHover: (event) {
-                if (state.tool == Phase1Tool.drawPhysicsArea) {
+                if (state.tool == Phase1Tool.drawPhysicsArea &&
+                    state.physicsDrawing) {
                   final snapped = _getSnappedOffset(event.localPosition, cell, state.snapToGrid);
                   notifier.updatePhysicsAreaHover(snapped);
                 }
@@ -271,7 +259,7 @@ class _MaskCanvasState extends ConsumerState<MaskCanvas> {
                   paintPreview: state.paintPreview,
                   movePreview: state.movePreview,
                   scale: _transform.value.getMaxScaleOnAxis(),
-                  selectedVertexIndex: state.selectedVertexIndex,
+                  physicsDrawing: state.physicsDrawing,
                   physicsAreaHoverPos: state.physicsAreaHoverPos,
                   curveMode: state.curveMode,
                   curveDraftPoints: state.curveDraftPoints,
@@ -295,7 +283,7 @@ class _MaskCanvasPainter extends CustomPainter {
     required this.paintPreview,
     required this.movePreview,
     required this.scale,
-    required this.selectedVertexIndex,
+    required this.physicsDrawing,
     required this.physicsAreaHoverPos,
     required this.curveMode,
     required this.curveDraftPoints,
@@ -309,7 +297,7 @@ class _MaskCanvasPainter extends CustomPainter {
   final Set<Cell>? paintPreview;
   final MovePreview? movePreview;
   final double scale;
-  final int? selectedVertexIndex;
+  final bool physicsDrawing;
   final ui.Offset? physicsAreaHoverPos;
   final bool curveMode;
   final List<Vec2> curveDraftPoints;
@@ -337,7 +325,7 @@ class _MaskCanvasPainter extends CustomPainter {
 
   void _paintCrosshair(Canvas canvas, Size size) {
     final hover = physicsAreaHoverPos;
-    if (tool == Phase1Tool.drawPhysicsArea && hover != null) {
+    if (tool == Phase1Tool.drawPhysicsArea && physicsDrawing && hover != null) {
       final paint = Paint()
         ..color = Colors.purpleAccent.withValues(alpha: 0.3)
         ..strokeWidth = 1.0 / scale
@@ -541,150 +529,152 @@ class _MaskCanvasPainter extends CustomPainter {
       textPainter.paint(canvas, origin + Offset(2 / scale, -(fontSize + 4) / scale));
     }
 
-    // Draw physicsTrackArea polygon (purple lines)
+    // Physics track area polygon.
     if (mask.physicsTrackArea.isNotEmpty) {
-      final path = Path();
       final pts = mask.physicsTrackArea;
-      path.moveTo(origin.dx + pts.first.x, origin.dy + pts.first.y);
+      final drawing =
+          selected && tool == Phase1Tool.drawPhysicsArea && physicsDrawing;
+
+      final path = Path()
+        ..moveTo(origin.dx + pts.first.x, origin.dy + pts.first.y);
       for (var i = 1; i < pts.length; i++) {
         path.lineTo(origin.dx + pts[i].x, origin.dy + pts[i].y);
       }
-      path.close();
 
-      // Drivable road area fill
+      // While drawing the polyline stays open (no auto snap-back to the
+      // origin); the finished area is a filled, closed polygon.
+      if (!drawing) {
+        path.close();
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color =
+                Colors.purpleAccent.withValues(alpha: selected ? 0.15 : 0.08)
+            ..style = PaintingStyle.fill,
+        );
+      }
+
       canvas.drawPath(
         path,
         Paint()
-          ..color = Colors.purpleAccent.withValues(alpha: selected ? 0.15 : 0.08)
-          ..style = PaintingStyle.fill,
-      );
-
-      // Polygon boundary (purple stroke)
-      canvas.drawPath(
-        path,
-        Paint()
-          ..color = Colors.purpleAccent.withValues(alpha: selected ? 1.0 : 0.5)
+          ..color = Colors.purpleAccent.withValues(alpha: selected ? 1.0 : 0.6)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = (selected ? 2.0 : 1.0) / scale,
+          ..strokeWidth = (selected ? 3.5 : 2.0) / scale
+          ..strokeJoin = StrokeJoin.round
+          ..strokeCap = StrokeCap.round,
       );
 
-      // If drawPhysicsArea tool is active AND selected, draw interactive vertices and preview lines
-      if (selected && tool == Phase1Tool.drawPhysicsArea) {
+      if (drawing) {
         for (var i = 0; i < pts.length; i++) {
-          final pt = pts[i];
-          final center = origin + Offset(pt.x, pt.y);
-          final isVertexSelected = selectedVertexIndex == i;
-
-          // Outer ring
+          final center = origin + Offset(pts[i].x, pts[i].y);
+          // The first vertex is the close target once the shape has 3+ points;
+          // the last is the undo target.
+          final canClose = i == 0 && pts.length >= 3;
+          final isLast = i == pts.length - 1;
+          final ringColor = canClose
+              ? Colors.greenAccent
+              : (isLast ? Colors.yellowAccent : Colors.purple);
+          final big = canClose || isLast;
           canvas.drawCircle(
             center,
-            (isVertexSelected ? 6.0 : 4.0) / scale,
-            Paint()..color = isVertexSelected ? Colors.yellowAccent : Colors.purple,
+            (big ? 6.0 : 4.5) / scale,
+            Paint()..color = ringColor,
           );
-          // Inner core
           canvas.drawCircle(
             center,
-            (isVertexSelected ? 3.0 : 2.0) / scale,
-            Paint()..color = isVertexSelected ? Colors.black : Colors.white,
+            (big ? 3.0 : 2.5) / scale,
+            Paint()..color = Colors.white,
           );
-
-          // Draw index number for readability
-          final textPainter = TextPainter(
-            text: TextSpan(
-              text: '${i + 1}',
-              style: TextStyle(
-                color: Colors.purpleAccent,
-                fontSize: 10.0 / scale,
-                fontWeight: FontWeight.bold,
-                backgroundColor: Colors.black.withValues(alpha: 0.5),
-              ),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout();
-          textPainter.paint(canvas, center + Offset(6.0 / scale, -10.0 / scale));
         }
 
-        // Draw preview line to hover position (if not in curveMode)
+        // Rubber-band preview from the last point to the cursor (line mode).
         final hover = physicsAreaHoverPos;
-        if (!curveMode && hover != null && pts.isNotEmpty) {
-          final last = pts.last;
+        if (!curveMode && hover != null) {
           canvas.drawLine(
-            origin + Offset(last.x, last.y),
+            origin + Offset(pts.last.x, pts.last.y),
             hover,
             Paint()
-              ..color = Colors.purpleAccent.withValues(alpha: 0.6)
-              ..strokeWidth = 1.5 / scale
-              ..style = PaintingStyle.stroke,
+              ..color = Colors.purpleAccent.withValues(alpha: 0.7)
+              ..strokeWidth = 3.0 / scale
+              ..style = PaintingStyle.stroke
+              ..strokeCap = StrokeCap.round,
           );
         }
       }
     }
 
-    // Curve drawing Mode overlays
-    if (selected && tool == Phase1Tool.drawPhysicsArea && curveMode) {
+    // Curve overlay: reconstruct the arc's start and center from the draft and
+    // the current polyline. With an existing polyline the last vertex is the
+    // start, so the draft only holds the center; otherwise the draft holds the
+    // start then the center.
+    if (selected &&
+        tool == Phase1Tool.drawPhysicsArea &&
+        physicsDrawing &&
+        curveMode) {
       final bg = Paint()..color = Colors.black.withValues(alpha: 0.6);
-      final fgCenter = Paint()..color = Colors.purpleAccent;
-      final fgStart = Paint()..color = Colors.purpleAccent;
-
+      final fg = Paint()..color = Colors.purpleAccent;
       final draft = curveDraftPoints;
       final hover = physicsAreaHoverPos;
+      final pts = mask.physicsTrackArea;
 
-      if (draft.isNotEmpty) {
-        final cLocal = draft[0];
-        final center = origin + Offset(cLocal.x, cLocal.y);
-        // Paint Center
-        canvas.drawCircle(center, 5.0 / scale, Paint()..color = Colors.purpleAccent);
-        _drawLabel(canvas, center, 'Center', bg, fgCenter);
+      final Vec2? start = pts.isNotEmpty
+          ? pts.last
+          : (draft.isNotEmpty ? draft[0] : null);
+      final Vec2? center = pts.isNotEmpty
+          ? (draft.isNotEmpty ? draft[0] : null)
+          : (draft.length > 1 ? draft[1] : null);
 
-        if (draft.length == 1 && hover != null) {
-          // Draw preview radius line from Center to cursor
-          canvas.drawLine(
-            center,
-            hover,
-            Paint()
-              ..color = Colors.purpleAccent.withValues(alpha: 0.5)
-              ..strokeWidth = 1.5 / scale
-              ..style = PaintingStyle.stroke,
-          );
-        } else if (draft.length == 2) {
-          final sLocal = draft[1];
-          final start = origin + Offset(sLocal.x, sLocal.y);
-          // Paint Start
-          canvas.drawCircle(start, 5.0 / scale, Paint()..color = Colors.purpleAccent);
-          _drawLabel(canvas, start, 'Start', bg, fgStart);
+      if (start != null) {
+        final startPt = origin + Offset(start.x, start.y);
+        canvas.drawCircle(startPt, 5.0 / scale, fg);
+        _drawLabel(canvas, startPt, 'Start', bg, fg);
+      }
+      if (center != null) {
+        final centerPt = origin + Offset(center.x, center.y);
+        canvas.drawCircle(centerPt, 5.0 / scale, fg);
+        _drawLabel(canvas, centerPt, 'Center', bg, fg);
+      }
 
-          // Draw dashed circle radius guideline
-          final double r = math.sqrt((start.dx - center.dx) * (start.dx - center.dx) +
-              (start.dy - center.dy) * (start.dy - center.dy));
-          canvas.drawCircle(
-            center,
-            r,
-            Paint()
-              ..color = Colors.purpleAccent.withValues(alpha: 0.15)
-              ..strokeWidth = 1.0 / scale
-              ..style = PaintingStyle.stroke,
-          );
-
-          if (hover != null) {
-            // Generate the preview arc using center, start, and current hover angle
-            final hoverLocal = Vec2(hover.dx - origin.dx, hover.dy - origin.dy);
-            final arcPts = _generateArc(draft[0], draft[1], hoverLocal, mask.widthCells, mask.heightCells);
-
-            if (arcPts.isNotEmpty) {
-              final arcPath = Path();
-              arcPath.moveTo(origin.dx + arcPts.first.x, origin.dy + arcPts.first.y);
-              for (var i = 1; i < arcPts.length; i++) {
-                arcPath.lineTo(origin.dx + arcPts[i].x, origin.dy + arcPts[i].y);
-              }
-              canvas.drawPath(
-                arcPath,
-                Paint()
-                  ..color = Colors.purpleAccent.withValues(alpha: 0.8)
-                  ..strokeWidth = 2.0 / scale
-                  ..style = PaintingStyle.stroke,
-              );
-            }
+      // While choosing the center there is no connecting line; the arc preview
+      // only appears once both start and center are set (choosing the end).
+      if (start != null && center != null && hover != null) {
+        // Choosing the end: show the radius guide and the preview arc.
+        final centerPt = origin + Offset(center.x, center.y);
+        final startPt = origin + Offset(start.x, start.y);
+        final r = math.sqrt(
+          (startPt.dx - centerPt.dx) * (startPt.dx - centerPt.dx) +
+              (startPt.dy - centerPt.dy) * (startPt.dy - centerPt.dy),
+        );
+        canvas.drawCircle(
+          centerPt,
+          r,
+          Paint()
+            ..color = Colors.purpleAccent.withValues(alpha: 0.15)
+            ..strokeWidth = 1.0 / scale
+            ..style = PaintingStyle.stroke,
+        );
+        final hoverLocal = Vec2(hover.dx - origin.dx, hover.dy - origin.dy);
+        final arcPts = _generateArc(
+          center,
+          start,
+          hoverLocal,
+          mask.widthCells,
+          mask.heightCells,
+        );
+        if (arcPts.isNotEmpty) {
+          final arcPath = Path()
+            ..moveTo(origin.dx + arcPts.first.x, origin.dy + arcPts.first.y);
+          for (var i = 1; i < arcPts.length; i++) {
+            arcPath.lineTo(origin.dx + arcPts[i].x, origin.dy + arcPts[i].y);
           }
+          canvas.drawPath(
+            arcPath,
+            Paint()
+              ..color = Colors.purpleAccent.withValues(alpha: 0.85)
+              ..strokeWidth = 3.5 / scale
+              ..style = PaintingStyle.stroke
+              ..strokeCap = StrokeCap.round,
+          );
         }
       }
     }
@@ -744,7 +734,7 @@ class _MaskCanvasPainter extends CustomPainter {
       oldDelegate.paintPreview != paintPreview ||
       oldDelegate.movePreview != movePreview ||
       oldDelegate.scale != scale ||
-      oldDelegate.selectedVertexIndex != selectedVertexIndex ||
+      oldDelegate.physicsDrawing != physicsDrawing ||
       oldDelegate.physicsAreaHoverPos != physicsAreaHoverPos ||
       oldDelegate.curveMode != curveMode ||
       oldDelegate.curveDraftPoints != curveDraftPoints;

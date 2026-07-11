@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/constants.dart';
 import '../logic/asset_bundle.dart';
+import '../logic/physics_track_area.dart';
 import '../logic/port_placement.dart';
 import '../models/block_def.dart';
 import '../models/geometry.dart';
@@ -85,7 +86,7 @@ class AssetDefinerState {
     this.statusMessage,
     this.isDirty = false,
     this.currentFilePath,
-    this.selectedVertexIndex,
+    this.physicsDrawing = false,
     this.snapToGrid = true,
     this.physicsAreaHoverPos,
     this.curveMode = false,
@@ -134,8 +135,11 @@ class AssetDefinerState {
   final bool isDirty;
   final String? currentFilePath;
 
-  /// Currently selected vertex index for physicsTrackArea editing.
-  final int? selectedVertexIndex;
+  /// Whether the physics-area tool is actively placing points on the selected
+  /// mask (draw mode). When false the existing area is only viewed; the user
+  /// must Clear to start editing it again. Entered by selecting an empty-area
+  /// block or by pressing Clear; left on complete/cancel.
+  final bool physicsDrawing;
 
   /// Whether physicsTrackArea vertices snap to the 16px grid.
   final bool snapToGrid;
@@ -146,7 +150,9 @@ class AssetDefinerState {
   /// Whether curve mode is active for physicsTrackArea editing.
   final bool curveMode;
 
-  /// Draft points currently placed for the arc curve (up to 2 points: center, start).
+  /// Points placed so far for the in-progress arc, in click order. With an
+  /// existing polyline the start is the last vertex, so this holds just the
+  /// center; on an empty polyline it holds start then center.
   final List<Vec2> curveDraftPoints;
 
   // --- Active-category views (keep the rest of the editor unchanged) --------
@@ -186,18 +192,56 @@ class AssetDefinerState {
   MaskDraft? get selectedMask =>
       selectedIndex == null ? null : masks[selectedIndex!];
 
+  /// Guidance/error line for the Draw Physics Area tool, shown in the bottom
+  /// status bar (kept out of the inspector). Null when the tool isn't active or
+  /// the selection can't carry an area.
+  String? get physicsStatusMessage {
+    if (tool != Phase1Tool.drawPhysicsArea) return null;
+    final mask = selectedMask;
+    if (mask == null) return 'Draw Physics Area: click a block to start';
+    if (mask.category == BlockCategory.islandTile) return null;
+
+    if (!physicsDrawing) {
+      return mask.physicsTrackArea.isNotEmpty
+          ? 'Physics area set. Clear to redraw it.'
+          : 'Physics area: click the block to start drawing.';
+    }
+
+    if (curveMode) {
+      final hasStart = mask.physicsTrackArea.isNotEmpty;
+      final n = curveDraftPoints.length;
+      final step = hasStart
+          ? (n == 0 ? 'choose the arc center' : 'choose the end point')
+          : (n == 0
+                ? 'choose the start point'
+                : n == 1
+                ? 'choose the arc center'
+                : 'choose the end point');
+      return 'Curve: $step. Esc cancels.';
+    }
+
+    final error = validatePhysicsTrackArea(mask);
+    if (error != null && mask.physicsTrackArea.isNotEmpty) {
+      return 'Cannot complete: physics area $error. Esc cancels.';
+    }
+    return 'Line: click to add points, click the first point to finish, '
+        'the last to undo. Esc cancels.';
+  }
+
   /// All masks across every category and every decoration image, for export.
   List<MaskDraft> get allMasks => [
-        for (final c in BlockCategory.values)
-          if (c != BlockCategory.decoration) ...?masksByCategory[c],
-        for (final list in decorationMasks) ...list,
-      ];
+    for (final c in BlockCategory.values)
+      if (c != BlockCategory.decoration) ...?masksByCategory[c],
+    for (final list in decorationMasks) ...list,
+  ];
 
   bool get canExport =>
-      BlockCategory.values.any((c) =>
-          c != BlockCategory.decoration &&
-          images[c] != null &&
-          (masksByCategory[c]?.isNotEmpty ?? false)) ||
+      BlockCategory.values.any(
+        (c) =>
+            c != BlockCategory.decoration &&
+            images[c] != null &&
+            (masksByCategory[c]?.isNotEmpty ?? false),
+      ) ||
       decorationMasks.any((m) => m.isNotEmpty);
 
   AssetDefinerState copyWith({
@@ -216,7 +260,7 @@ class AssetDefinerState {
     String? Function()? statusMessage,
     bool? isDirty,
     String? Function()? currentFilePath,
-    int? Function()? selectedVertexIndex,
+    bool? physicsDrawing,
     bool? snapToGrid,
     ui.Offset? Function()? physicsAreaHoverPos,
     bool? curveMode,
@@ -245,20 +289,21 @@ class AssetDefinerState {
       decorationMasks: nextDecorationMasks,
       activeDecorationIndex: decIndex,
       activeCategory: category,
-      selectedIndex:
-          selectedIndex != null ? selectedIndex() : this.selectedIndex,
+      selectedIndex: selectedIndex != null
+          ? selectedIndex()
+          : this.selectedIndex,
       tool: tool ?? this.tool,
       dragPreview: dragPreview != null ? dragPreview() : this.dragPreview,
       paintPreview: paintPreview != null ? paintPreview() : this.paintPreview,
       movePreview: movePreview != null ? movePreview() : this.movePreview,
-      statusMessage:
-          statusMessage != null ? statusMessage() : this.statusMessage,
+      statusMessage: statusMessage != null
+          ? statusMessage()
+          : this.statusMessage,
       isDirty: isDirty ?? this.isDirty,
-      currentFilePath:
-          currentFilePath != null ? currentFilePath() : this.currentFilePath,
-      selectedVertexIndex: selectedVertexIndex != null
-          ? selectedVertexIndex()
-          : this.selectedVertexIndex,
+      currentFilePath: currentFilePath != null
+          ? currentFilePath()
+          : this.currentFilePath,
+      physicsDrawing: physicsDrawing ?? this.physicsDrawing,
       snapToGrid: snapToGrid ?? this.snapToGrid,
       physicsAreaHoverPos: physicsAreaHoverPos != null
           ? physicsAreaHoverPos()
@@ -274,8 +319,6 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
   ({int x, int y})? _dragAnchor;
   Cell? _lastPaintCell;
 
-  bool _isDraggingVertex = false;
-
   @override
   AssetDefinerState build() => const AssetDefinerState();
 
@@ -286,11 +329,13 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       dragPreview: () => null,
       paintPreview: () => null,
       movePreview: () => null,
-      selectedVertexIndex: () => null,
+      physicsDrawing: false,
       physicsAreaHoverPos: () => null,
       curveMode: false,
       curveDraftPoints: const [],
-      tool: category == BlockCategory.islandTile ? Phase1Tool.drawBox : state.tool,
+      tool: category == BlockCategory.islandTile
+          ? Phase1Tool.drawBox
+          : state.tool,
       statusMessage: () => 'Editing ${category.jsonValue}',
     );
   }
@@ -331,17 +376,19 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final cols = (image.width / GridConstants.cellSize).ceil();
     final rows = (image.height / GridConstants.cellSize).ceil();
     final outOfBounds = state.masks
-        .where((m) =>
-            m.gridX + m.widthCells > cols || m.gridY + m.heightCells > rows)
+        .where(
+          (m) =>
+              m.gridX + m.widthCells > cols || m.gridY + m.heightCells > rows,
+        )
         .map((m) => m.id)
         .toList();
 
     final statusMessage = !hadImage
         ? 'Loaded $name (${image.width} x ${image.height} px)'
         : outOfBounds.isEmpty
-            ? 'Replaced image with $name, kept ${state.masks.length} blocks'
-            : 'Replaced image; ${outOfBounds.length} block(s) now out of '
-                'bounds: ${outOfBounds.join(', ')}';
+        ? 'Replaced image with $name, kept ${state.masks.length} blocks'
+        : 'Replaced image; ${outOfBounds.length} block(s) now out of '
+              'bounds: ${outOfBounds.join(', ')}';
 
     final newImage = CategoryImage(bytes: bytes, image: image, name: name);
     if (state.activeCategory == BlockCategory.decoration) {
@@ -353,7 +400,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
         dragPreview: () => null,
         paintPreview: () => null,
         movePreview: () => null,
-        selectedVertexIndex: () => null,
+        physicsDrawing: false,
         physicsAreaHoverPos: () => null,
         curveMode: false,
         curveDraftPoints: const [],
@@ -367,7 +414,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
         dragPreview: () => null,
         paintPreview: () => null,
         movePreview: () => null,
-        selectedVertexIndex: () => null,
+        physicsDrawing: false,
         physicsAreaHoverPos: () => null,
         curveMode: false,
         curveDraftPoints: const [],
@@ -399,7 +446,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       dragPreview: () => null,
       paintPreview: () => null,
       movePreview: () => null,
-      selectedVertexIndex: () => null,
+      physicsDrawing: false,
       physicsAreaHoverPos: () => null,
       curveMode: false,
       curveDraftPoints: const [],
@@ -417,7 +464,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       dragPreview: () => null,
       paintPreview: () => null,
       movePreview: () => null,
-      selectedVertexIndex: () => null,
+      physicsDrawing: false,
       physicsAreaHoverPos: () => null,
       curveMode: false,
       curveDraftPoints: const [],
@@ -441,7 +488,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       dragPreview: () => null,
       paintPreview: () => null,
       movePreview: () => null,
-      selectedVertexIndex: () => null,
+      physicsDrawing: false,
       physicsAreaHoverPos: () => null,
       curveMode: false,
       curveDraftPoints: const [],
@@ -456,13 +503,22 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       dragPreview: () => null,
       paintPreview: () => null,
       movePreview: () => null,
-      selectedVertexIndex: () => null,
+      physicsDrawing: _physicsDrawingFor(tool, state.selectedIndex),
       physicsAreaHoverPos: () => null,
       curveMode: false,
       curveDraftPoints: const [],
     );
     _dragAnchor = null;
-    _isDraggingVertex = false;
+  }
+
+  /// Whether selecting [index] under [tool] should enter physics draw mode:
+  /// only the physics tool on a block whose area is still empty. A block that
+  /// already has an area starts in view mode (Clear to edit it).
+  bool _physicsDrawingFor(Phase1Tool tool, int? index) {
+    if (tool != Phase1Tool.drawPhysicsArea || index == null) return false;
+    final masks = state.masks;
+    if (index < 0 || index >= masks.length) return false;
+    return masks[index].physicsTrackArea.isEmpty;
   }
 
   /// Grid dimensions of the current image in whole cells.
@@ -484,7 +540,11 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
         _dragAnchor = (x: cellX, y: cellY);
         state = state.copyWith(
           dragPreview: () => DragPreview(
-              gridX: cellX, gridY: cellY, widthCells: 1, heightCells: 1),
+            gridX: cellX,
+            gridY: cellY,
+            widthCells: 1,
+            heightCells: 1,
+          ),
         );
       case Phase1Tool.paintMask:
         _lastPaintCell = (cellX, cellY);
@@ -514,8 +574,8 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
         final from = _lastPaintCell ?? (cellX, cellY);
         _lastPaintCell = (cellX, cellY);
         state = state.copyWith(
-            paintPreview: () =>
-                {...cells, ..._lineCells(from, (cellX, cellY))});
+          paintPreview: () => {...cells, ..._lineCells(from, (cellX, cellY))},
+        );
       case Phase1Tool.select:
         break;
       case Phase1Tool.drawPhysicsArea:
@@ -608,14 +668,22 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
         // A click is a 1x1 marquee.
         state = state.copyWith(
           dragPreview: () => DragPreview(
-              gridX: cellX, gridY: cellY, widthCells: 1, heightCells: 1),
+            gridX: cellX,
+            gridY: cellY,
+            widthCells: 1,
+            heightCells: 1,
+          ),
         );
         _commitPortStrip();
       case Phase1Tool.drawBox:
         if (state.activeCategory == BlockCategory.islandTile) {
           state = state.copyWith(
             dragPreview: () => DragPreview(
-                gridX: cellX, gridY: cellY, widthCells: 1, heightCells: 1),
+              gridX: cellX,
+              gridY: cellY,
+              widthCells: 1,
+              heightCells: 1,
+            ),
           );
           _commitBox();
         }
@@ -672,12 +740,17 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final mask = state.masks[move.index];
     final (cols, rows) = _gridSize;
     // Clamp so the whole bounding box stays inside the image.
-    final dx = (cellX - anchor.x)
-        .clamp(-mask.gridX, cols - mask.widthCells - mask.gridX);
-    final dy = (cellY - anchor.y)
-        .clamp(-mask.gridY, rows - mask.heightCells - mask.gridY);
+    final dx = (cellX - anchor.x).clamp(
+      -mask.gridX,
+      cols - mask.widthCells - mask.gridX,
+    );
+    final dy = (cellY - anchor.y).clamp(
+      -mask.gridY,
+      rows - mask.heightCells - mask.gridY,
+    );
     state = state.copyWith(
-        movePreview: () => MovePreview(index: move.index, dx: dx, dy: dy));
+      movePreview: () => MovePreview(index: move.index, dx: dx, dy: dy),
+    );
   }
 
   void _commitMove() {
@@ -716,7 +789,8 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       selectedIndex: () => state.masks.length,
       paintPreview: () => null,
       isDirty: true,
-      statusMessage: () => 'Added freeform ${mask.id} '
+      statusMessage: () =>
+          'Added freeform ${mask.id} '
           '(${cells.length} cells in a ${mask.widthCells} x '
           '${mask.heightCells} box)',
     );
@@ -730,13 +804,20 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     // pick the topmost mask containing the strip and select it.
     var maskIndex = state.selectedIndex;
     if (maskIndex == null ||
-        !state.masks[maskIndex]
-            .containsRect(preview.gridX, preview.gridY, preview.widthCells,
-                preview.heightCells)) {
+        !state.masks[maskIndex].containsRect(
+          preview.gridX,
+          preview.gridY,
+          preview.widthCells,
+          preview.heightCells,
+        )) {
       maskIndex = null;
       for (var i = state.masks.length - 1; i >= 0; i--) {
-        if (state.masks[i].containsRect(preview.gridX, preview.gridY,
-            preview.widthCells, preview.heightCells)) {
+        if (state.masks[i].containsRect(
+          preview.gridX,
+          preview.gridY,
+          preview.widthCells,
+          preview.heightCells,
+        )) {
           maskIndex = i;
           break;
         }
@@ -781,7 +862,8 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
           selectedIndex: () => maskIndex,
           dragPreview: () => null,
           isDirty: true,
-          statusMessage: () => 'Added ${port.bidirectional ? "pass-through " : ""}'
+          statusMessage: () =>
+              'Added ${port.bidirectional ? "pass-through " : ""}'
               'port ${port.direction.jsonValue} (span ${port.span}) '
               'on ${mask.id}',
         );
@@ -791,21 +873,20 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
   // --- Selection and editing -------------------------------------------------
 
   /// Direct selection from the block list, independent of the active tool.
-  void selectMask(int? index) =>
-      state = state.copyWith(
-        selectedIndex: () => index,
-        selectedVertexIndex: () => null,
-        physicsAreaHoverPos: () => null,
-        curveMode: false,
-        curveDraftPoints: const [],
-      );
+  void selectMask(int? index) => state = state.copyWith(
+    selectedIndex: () => index,
+    physicsDrawing: _physicsDrawingFor(state.tool, index),
+    physicsAreaHoverPos: () => null,
+    curveMode: false,
+    curveDraftPoints: const [],
+  );
 
   void _selectAt(int cellX, int cellY) {
     for (var i = state.masks.length - 1; i >= 0; i--) {
       if (state.masks[i].containsCell(cellX, cellY)) {
         state = state.copyWith(
           selectedIndex: () => i,
-          selectedVertexIndex: () => null,
+          physicsDrawing: _physicsDrawingFor(state.tool, i),
           physicsAreaHoverPos: () => null,
           curveMode: false,
           curveDraftPoints: const [],
@@ -815,7 +896,7 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     }
     state = state.copyWith(
       selectedIndex: () => null,
-      selectedVertexIndex: () => null,
+      physicsDrawing: false,
       physicsAreaHoverPos: () => null,
       curveMode: false,
       curveDraftPoints: const [],
@@ -843,7 +924,11 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
 
   void removeMask(int index) {
     final masks = [...state.masks]..removeAt(index);
-    state = state.copyWith(masks: masks, selectedIndex: () => null, isDirty: true);
+    state = state.copyWith(
+      masks: masks,
+      selectedIndex: () => null,
+      isDirty: true,
+    );
   }
 
   void updatePort(int maskIndex, int portIndex, Port port) {
@@ -882,12 +967,14 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       final catImage = state.images[c];
       final catMasks = state.masksByCategory[c];
       if (catImage != null && catMasks != null && catMasks.isNotEmpty) {
-        sources.add(BundleSource(
-          category: c,
-          name: catImage.name,
-          imageBytes: catImage.bytes,
-          masks: catMasks,
-        ));
+        sources.add(
+          BundleSource(
+            category: c,
+            name: catImage.name,
+            imageBytes: catImage.bytes,
+            masks: catMasks,
+          ),
+        );
       }
     }
     for (var i = 0; i < state.decorationSources.length; i++) {
@@ -896,12 +983,14 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
           : const <MaskDraft>[];
       if (masks.isEmpty) continue;
       final img = state.decorationSources[i];
-      sources.add(BundleSource(
-        category: BlockCategory.decoration,
-        name: img.name,
-        imageBytes: img.bytes,
-        masks: masks,
-      ));
+      sources.add(
+        BundleSource(
+          category: BlockCategory.decoration,
+          name: img.name,
+          imageBytes: img.bytes,
+          masks: masks,
+        ),
+      );
     }
     return sources;
   }
@@ -926,11 +1015,18 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
   Future<void> saveAs() async {
     if (!state.canExport) return;
 
+    final physicsError = _physicsValidationError();
+    if (physicsError != null) {
+      state = state.copyWith(statusMessage: () => physicsError);
+      return;
+    }
+
     final duplicateIds = _findDuplicateIds();
     if (duplicateIds.isNotEmpty) {
       state = state.copyWith(
-          statusMessage: () =>
-              'Save blocked: duplicate block IDs ${duplicateIds.join(', ')}');
+        statusMessage: () =>
+            'Save blocked: duplicate block IDs ${duplicateIds.join(', ')}',
+      );
       return;
     }
 
@@ -961,7 +1057,9 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     // Populate the shared library from the same bundle we just wrote.
     try {
       final data = readAssetBundle(bundleBytes);
-      await ref.read(assetLibraryProvider.notifier).loadAssets(
+      await ref
+          .read(assetLibraryProvider.notifier)
+          .loadAssets(
             blocks: data.blocks,
             sheetBytes: data.sheetBytes,
             sourceName: suggestedName,
@@ -981,11 +1079,18 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
   Future<void> saveToPath(String path) async {
     if (!state.canExport) return;
 
+    final physicsError = _physicsValidationError();
+    if (physicsError != null) {
+      state = state.copyWith(statusMessage: () => physicsError);
+      return;
+    }
+
     final duplicateIds = _findDuplicateIds();
     if (duplicateIds.isNotEmpty) {
       state = state.copyWith(
-          statusMessage: () =>
-              'Save blocked: duplicate block IDs ${duplicateIds.join(', ')}');
+        statusMessage: () =>
+            'Save blocked: duplicate block IDs ${duplicateIds.join(', ')}',
+      );
       return;
     }
 
@@ -1011,7 +1116,9 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     // Populate the shared library from the same bundle we just wrote.
     try {
       final data = readAssetBundle(bundleBytes);
-      await ref.read(assetLibraryProvider.notifier).loadAssets(
+      await ref
+          .read(assetLibraryProvider.notifier)
+          .loadAssets(
             blocks: data.blocks,
             sheetBytes: data.sheetBytes,
             sourceName: path.split('/').last,
@@ -1039,7 +1146,11 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final bytes = result?.files.single.bytes;
     final path = result?.files.single.path;
     if (bytes == null) return;
-    await _loadBundleBytes(bytes, sourceName: result!.files.single.name, filePath: path);
+    await _loadBundleBytes(
+      bytes,
+      sourceName: result!.files.single.name,
+      filePath: path,
+    );
   }
 
   /// Opens a .rgpack given a filesystem path, used when the OS launches or
@@ -1053,7 +1164,11 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
       return;
     }
     final bytes = await file.readAsBytes();
-    await _loadBundleBytes(bytes, sourceName: path.split('/').last, filePath: path);
+    await _loadBundleBytes(
+      bytes,
+      sourceName: path.split('/').last,
+      filePath: path,
+    );
   }
 
   Future<ui.Image> _decode(Uint8List bytes) async {
@@ -1112,11 +1227,13 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final decorationMasks = <List<MaskDraft>>[];
     if (data.decorationSources.isNotEmpty) {
       for (final src in data.decorationSources) {
-        decorationSources.add(CategoryImage(
-          bytes: src.imageBytes,
-          image: await _decode(src.imageBytes),
-          name: src.name,
-        ));
+        decorationSources.add(
+          CategoryImage(
+            bytes: src.imageBytes,
+            image: await _decode(src.imageBytes),
+            name: src.name,
+          ),
+        );
         decorationMasks.add(src.masks);
       }
     } else {
@@ -1126,15 +1243,18 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
           if (m.category == BlockCategory.decoration) m,
       ];
       if (decoMasks.isNotEmpty) {
-        final decoBytes = data.categoryRawImages[BlockCategory.decoration] ??
+        final decoBytes =
+            data.categoryRawImages[BlockCategory.decoration] ??
             data.rawImageBytes;
-        decorationSources.add(CategoryImage(
-          bytes: decoBytes,
-          image: identical(decoBytes, data.rawImageBytes)
-              ? fallbackImage
-              : await _decode(decoBytes),
-          name: data.imageName,
-        ));
+        decorationSources.add(
+          CategoryImage(
+            bytes: decoBytes,
+            image: identical(decoBytes, data.rawImageBytes)
+                ? fallbackImage
+                : await _decode(decoBytes),
+            name: data.imageName,
+          ),
+        );
         decorationMasks.add(decoMasks);
       }
     }
@@ -1142,8 +1262,8 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final initialCategory = groupedMasks.keys.isNotEmpty
         ? groupedMasks.keys.first
         : (decorationSources.isNotEmpty
-            ? BlockCategory.decoration
-            : BlockCategory.track);
+              ? BlockCategory.decoration
+              : BlockCategory.track);
 
     state = AssetDefinerState(
       images: images,
@@ -1160,7 +1280,9 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     _nextBlockNumber = _highestBlockNumber(data.masks) + 1;
 
     // Also make it available to Phase 2 immediately.
-    await ref.read(assetLibraryProvider.notifier).loadAssets(
+    await ref
+        .read(assetLibraryProvider.notifier)
+        .loadAssets(
           blocks: data.blocks,
           sheetBytes: data.sheetBytes,
           sourceName: sourceName,
@@ -1198,15 +1320,14 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     return duplicates.toList();
   }
 
-  void selectVertex(int? index) {
-    state = state.copyWith(selectedVertexIndex: () => index);
-  }
-
   void setSnapToGrid(bool value) {
     state = state.copyWith(snapToGrid: value);
   }
 
   void toggleCurveMode() {
+    // Switching line/curve keeps the polyline built so far; only the
+    // in-progress arc draft is dropped so the next click starts the new mode
+    // cleanly.
     state = state.copyWith(
       curveMode: !state.curveMode,
       curveDraftPoints: const [],
@@ -1227,66 +1348,17 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     return val.roundToDouble();
   }
 
-  void trackAreaDragStart(ui.Offset localPos) {
-    final maskIndex = state.selectedIndex;
-    if (maskIndex == null) return;
-    final mask = state.masks[maskIndex];
-    final originX = mask.gridX * GridConstants.cellSize;
-    final originY = mask.gridY * GridConstants.cellSize;
-    final lx = localPos.dx - originX;
-    final ly = localPos.dy - originY;
-
-    final vertices = mask.physicsTrackArea;
-    int? clickedIdx;
-    const hitRadius = 8.0;
-    for (var i = 0; i < vertices.length; i++) {
-      final v = vertices[i];
-      final dist = math.sqrt((v.x - lx) * (v.x - lx) + (v.y - ly) * (v.y - ly));
-      if (dist <= hitRadius) {
-        clickedIdx = i;
-        break;
-      }
-    }
-
-    if (clickedIdx != null) {
-      _isDraggingVertex = true;
-      state = state.copyWith(
-        selectedVertexIndex: () => clickedIdx,
-      );
-    } else {
-      _isDraggingVertex = false;
-    }
-  }
-
-  void trackAreaDragUpdate(ui.Offset localPos) {
-    final maskIndex = state.selectedIndex;
-    final vertexIndex = state.selectedVertexIndex;
-    if (maskIndex == null || vertexIndex == null || !_isDraggingVertex) return;
-
-    final mask = state.masks[maskIndex];
-    final originX = mask.gridX * GridConstants.cellSize;
-    final originY = mask.gridY * GridConstants.cellSize;
-    final lx = (localPos.dx - originX).clamp(0.0, mask.widthCells * GridConstants.cellSize);
-    final ly = (localPos.dy - originY).clamp(0.0, mask.heightCells * GridConstants.cellSize);
-
-    final snappedX = _snapCoord(lx);
-    final snappedY = _snapCoord(ly);
-
-    final newVertices = [...mask.physicsTrackArea];
-    if (vertexIndex >= 0 && vertexIndex < newVertices.length) {
-      newVertices[vertexIndex] = Vec2(snappedX, snappedY);
-      final updated = mask.copyWith(physicsTrackArea: newVertices);
-      _updateMask(maskIndex, updated);
-    }
-  }
-
-  void trackAreaDragEnd() {
-    _isDraggingVertex = false;
-  }
-
-  List<Vec2> _generateArc(Vec2 center, Vec2 start, Vec2 end, int widthCells, int heightCells) {
-    final double r = math.sqrt((start.x - center.x) * (start.x - center.x) +
-        (start.y - center.y) * (start.y - center.y));
+  List<Vec2> _generateArc(
+    Vec2 center,
+    Vec2 start,
+    Vec2 end,
+    int widthCells,
+    int heightCells,
+  ) {
+    final double r = math.sqrt(
+      (start.x - center.x) * (start.x - center.x) +
+          (start.y - center.y) * (start.y - center.y),
+    );
     if (r == 0) return [start];
 
     final double thetaA = math.atan2(start.y - center.y, start.x - center.x);
@@ -1302,10 +1374,12 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final points1 = <Vec2>[];
     for (var i = 0; i <= steps; i++) {
       final t = thetaA + (angleB1 - thetaA) * (i / steps);
-      points1.add(Vec2(
-        (center.x + r * math.cos(t)).roundToDouble(),
-        (center.y + r * math.sin(t)).roundToDouble(),
-      ));
+      points1.add(
+        Vec2(
+          (center.x + r * math.cos(t)).roundToDouble(),
+          (center.y + r * math.sin(t)).roundToDouble(),
+        ),
+      );
     }
 
     // Path 2: Clockwise (decreasing angle)
@@ -1314,10 +1388,12 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final points2 = <Vec2>[];
     for (var i = 0; i <= steps; i++) {
       final t = thetaA + (angleB2 - thetaA) * (i / steps);
-      points2.add(Vec2(
-        (center.x + r * math.cos(t)).roundToDouble(),
-        (center.y + r * math.sin(t)).roundToDouble(),
-      ));
+      points2.add(
+        Vec2(
+          (center.x + r * math.cos(t)).roundToDouble(),
+          (center.y + r * math.sin(t)).roundToDouble(),
+        ),
+      );
     }
 
     int countInside(List<Vec2> pts) {
@@ -1338,8 +1414,18 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
   }
 
   void trackAreaTap(ui.Offset localPos) {
-    // Direct selection on canvas is ONLY allowed when no block is selected yet.
-    if (state.selectedIndex == null) {
+    final currentIndex = state.selectedIndex;
+    final currentMask = currentIndex == null ? null : state.masks[currentIndex];
+
+    // Selection only locks once drawing has actually begun (a committed point
+    // or an in-progress arc draft). Before that - in view mode, or in draw mode
+    // with nothing placed yet - a tap on another block just switches to it.
+    final drawingStarted = state.physicsDrawing &&
+        currentMask != null &&
+        (currentMask.physicsTrackArea.isNotEmpty ||
+            state.curveDraftPoints.isNotEmpty);
+
+    if (!drawingStarted) {
       final cellX = (localPos.dx / GridConstants.cellSize).floor();
       final cellY = (localPos.dy / GridConstants.cellSize).floor();
       int? hitIndex;
@@ -1349,31 +1435,34 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
           break;
         }
       }
-      if (hitIndex != null) {
+      // Tapping a different block selects it (empty area -> draw mode, existing
+      // area -> view mode). Tapping the current block falls through to place
+      // the first point when already in draw mode.
+      if (hitIndex != null && hitIndex != currentIndex) {
         selectMask(hitIndex);
         return;
       }
+      if (currentIndex == null) return;
     }
 
-    final maskIndex = state.selectedIndex;
-    if (maskIndex == null) return;
+    // A block is selected but not in draw mode: taps do nothing until the user
+    // presses Clear to start editing.
+    if (!state.physicsDrawing) return;
+
+    final maskIndex = state.selectedIndex!;
     final mask = state.masks[maskIndex];
     final originX = mask.gridX * GridConstants.cellSize;
     final originY = mask.gridY * GridConstants.cellSize;
     final lx = localPos.dx - originX;
     final ly = localPos.dy - originY;
 
-    // Check if clicked outside bounding box
-    if (lx < -8.0 ||
-        lx > mask.widthCells * GridConstants.cellSize + 8.0 ||
-        ly < -8.0 ||
-        ly > mask.heightCells * GridConstants.cellSize + 8.0) {
-      return;
-    }
-
     final vertices = mask.physicsTrackArea;
-    int? clickedIdx;
+
+    // Clicking an existing endpoint acts on the polyline: the first vertex
+    // closes the shape (auto-complete), the last vertex undoes it. Only these
+    // two are actionable; there is no free vertex selection anymore.
     const hitRadius = 8.0;
+    int? clickedIdx;
     for (var i = 0; i < vertices.length; i++) {
       final v = vertices[i];
       final dist = math.sqrt((v.x - lx) * (v.x - lx) + (v.y - ly) * (v.y - ly));
@@ -1382,96 +1471,125 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
         break;
       }
     }
-
-    if (clickedIdx != null) {
+    // Endpoint gestures only apply between arc drafts; mid-arc clicks feed the
+    // curve flow below.
+    if (clickedIdx != null && state.curveDraftPoints.isEmpty) {
       if (clickedIdx == 0 && vertices.length >= 3) {
         closePhysicsArea();
-      } else {
-        state = state.copyWith(selectedVertexIndex: () => clickedIdx);
+        return;
       }
+      if (clickedIdx == vertices.length - 1) {
+        undoPhysicsAreaVertex();
+        return;
+      }
+    }
+
+    final clickPt = Vec2(
+      _snapCoord(lx.clamp(0.0, mask.widthCells * GridConstants.cellSize)),
+      _snapCoord(ly.clamp(0.0, mask.heightCells * GridConstants.cellSize)),
+    );
+
+    if (state.curveMode) {
+      _curveTap(maskIndex, clickPt);
     } else {
-      final snappedX = _snapCoord(lx.clamp(0.0, mask.widthCells * GridConstants.cellSize));
-      final snappedY = _snapCoord(ly.clamp(0.0, mask.heightCells * GridConstants.cellSize));
-      final clickPt = Vec2(snappedX, snappedY);
-
-      if (state.curveMode) {
-        final nextDraft = [...state.curveDraftPoints];
-        if (nextDraft.isEmpty) {
-          nextDraft.add(clickPt);
-          state = state.copyWith(curveDraftPoints: nextDraft);
-        } else if (nextDraft.length == 1) {
-          nextDraft.add(clickPt);
-          state = state.copyWith(curveDraftPoints: nextDraft);
-        } else {
-          final center = nextDraft[0];
-          final start = nextDraft[1];
-          final end = clickPt;
-
-          final arcPoints = _generateArc(center, start, end, mask.widthCells, mask.heightCells);
-
-          final newVertices = [...mask.physicsTrackArea];
-          final currentSelect = state.selectedVertexIndex;
-          if (currentSelect != null && currentSelect >= 0 && currentSelect < newVertices.length) {
-            newVertices.insertAll(currentSelect + 1, arcPoints);
-            state = state.copyWith(
-              selectedVertexIndex: () => currentSelect + arcPoints.length,
-            );
-          } else {
-            newVertices.addAll(arcPoints);
-            state = state.copyWith(
-              selectedVertexIndex: () => newVertices.length - 1,
-            );
-          }
-
-          final updated = mask.copyWith(physicsTrackArea: newVertices);
-          _updateMask(maskIndex, updated);
-          state = state.copyWith(curveDraftPoints: const []);
-        }
-      } else {
-        final newVertices = [...mask.physicsTrackArea];
-        final currentSelect = state.selectedVertexIndex;
-        if (currentSelect != null && currentSelect >= 0 && currentSelect < newVertices.length) {
-          newVertices.insert(currentSelect + 1, clickPt);
-          state = state.copyWith(
-            selectedVertexIndex: () => currentSelect + 1,
-          );
-        } else {
-          newVertices.add(clickPt);
-          state = state.copyWith(
-            selectedVertexIndex: () => newVertices.length - 1,
-          );
-        }
-
-        final updated = mask.copyWith(physicsTrackArea: newVertices);
-        _updateMask(maskIndex, updated);
-      }
+      _appendVertices(maskIndex, [clickPt]);
     }
   }
 
-  void undoPhysicsAreaVertex() {
-    final maskIndex = state.selectedIndex;
-    if (maskIndex == null) return;
+  /// Handles one click in curve mode. The arc always runs from a start point
+  /// through a center to an end. When the polyline already has a point, that
+  /// last point is the start, so the flow is center then end; otherwise the
+  /// user first picks the start, then center, then end.
+  void _curveTap(int maskIndex, Vec2 clickPt) {
     final mask = state.masks[maskIndex];
-    if (mask.physicsTrackArea.isEmpty) return;
+    final vertices = mask.physicsTrackArea;
+    final draft = state.curveDraftPoints;
+    final hasStart = vertices.isNotEmpty;
 
-    final newVertices = [...mask.physicsTrackArea]..removeLast();
-    int? nextSelect;
-    if (newVertices.isNotEmpty) {
-      nextSelect = newVertices.length - 1;
+    if (!hasStart) {
+      // Empty polyline: collect start, then center, then generate on end.
+      if (draft.length < 2) {
+        state = state.copyWith(curveDraftPoints: [...draft, clickPt]);
+        return;
+      }
+      _commitArc(maskIndex, start: draft[0], center: draft[1], end: clickPt);
+    } else {
+      // Last vertex is the start: collect center, then generate on end.
+      if (draft.isEmpty) {
+        state = state.copyWith(curveDraftPoints: [clickPt]);
+        return;
+      }
+      _commitArc(
+        maskIndex,
+        start: vertices.last,
+        center: draft[0],
+        end: clickPt,
+      );
     }
-    state = state.copyWith(
-      selectedVertexIndex: () => nextSelect,
-      curveDraftPoints: const [],
+  }
+
+  void _commitArc(
+    int maskIndex, {
+    required Vec2 start,
+    required Vec2 center,
+    required Vec2 end,
+  }) {
+    final mask = state.masks[maskIndex];
+    final arc = _generateArc(
+      center,
+      start,
+      end,
+      mask.widthCells,
+      mask.heightCells,
     );
+    // _generateArc's first point is the start; drop it when the start is
+    // already a committed vertex so it is not duplicated.
+    final toAdd = mask.physicsTrackArea.isNotEmpty &&
+            arc.isNotEmpty &&
+            arc.first == mask.physicsTrackArea.last
+        ? arc.sublist(1)
+        : arc;
+    // A curve is a one-shot: after committing the arc, drop back to line mode.
+    state = state.copyWith(curveDraftPoints: const [], curveMode: false);
+    _appendVertices(maskIndex, toAdd);
+  }
+
+  void _appendVertices(int maskIndex, List<Vec2> points) {
+    if (points.isEmpty) return;
+    final mask = state.masks[maskIndex];
+    final newVertices = [...mask.physicsTrackArea, ...points];
     _updateMask(maskIndex, mask.copyWith(physicsTrackArea: newVertices));
   }
 
+  /// Steps back one action: an in-progress arc draft first, then the last
+  /// committed vertex. Only meaningful in draw mode.
+  void undoPhysicsAreaVertex() {
+    final maskIndex = state.selectedIndex;
+    if (maskIndex == null || !state.physicsDrawing) return;
+
+    if (state.curveDraftPoints.isNotEmpty) {
+      state = state.copyWith(
+        curveDraftPoints: [...state.curveDraftPoints]..removeLast(),
+      );
+      return;
+    }
+
+    final mask = state.masks[maskIndex];
+    if (mask.physicsTrackArea.isEmpty) return;
+    final newVertices = [...mask.physicsTrackArea]..removeLast();
+    _updateMask(maskIndex, mask.copyWith(physicsTrackArea: newVertices));
+  }
+
+  /// Clears the area and (re-)enters draw mode so the user can draw a new one.
+  /// This is the only entry point for editing a block that already has an area.
   void clearPhysicsArea() {
     final maskIndex = state.selectedIndex;
     if (maskIndex == null) return;
     final mask = state.masks[maskIndex];
     state = state.copyWith(
-      selectedVertexIndex: () => null,
+      physicsDrawing: true,
+      physicsAreaHoverPos: () => null,
+      curveMode: false,
       curveDraftPoints: const [],
     );
     _updateMask(maskIndex, mask.copyWith(physicsTrackArea: const []));
@@ -1481,22 +1599,26 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     final maskIndex = state.selectedIndex;
     if (maskIndex == null) return;
     final mask = state.masks[maskIndex];
-    final vertices = mask.physicsTrackArea;
-    if (vertices.isNotEmpty && (vertices.length < 3 || !isSimplePolygon(vertices))) {
+    final validationError = validatePhysicsTrackArea(mask);
+    if (validationError != null) {
       state = state.copyWith(
-        statusMessage: () => 'Invalid area! Polygon has self-intersections or too few vertices.',
+        statusMessage: () => 'Invalid physics area: $validationError.',
       );
       return;
     }
+    // Back to normal mode: keep the finished area, deselect the block.
     state = state.copyWith(
       selectedIndex: () => null,
-      selectedVertexIndex: () => null,
+      physicsDrawing: false,
       physicsAreaHoverPos: () => null,
+      curveMode: false,
       curveDraftPoints: const [],
     );
   }
 
   void cancelPhysicsArea() {
+    // Draw mode always starts from an empty area (fresh or after Clear), so
+    // cancelling discards whatever was drawn and returns to normal mode.
     final maskIndex = state.selectedIndex;
     if (maskIndex != null) {
       final mask = state.masks[maskIndex];
@@ -1504,128 +1626,25 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     }
     state = state.copyWith(
       selectedIndex: () => null,
-      selectedVertexIndex: () => null,
+      physicsDrawing: false,
       physicsAreaHoverPos: () => null,
+      curveMode: false,
       curveDraftPoints: const [],
     );
   }
 
-  void resetPhysicsAreaToBoundingBox() {
-    final maskIndex = state.selectedIndex;
-    if (maskIndex == null) return;
-    final mask = state.masks[maskIndex];
-    final w = mask.widthCells * GridConstants.cellSize;
-    final h = mask.heightCells * GridConstants.cellSize;
-
-    final newVertices = [
-      const Vec2(0, 0),
-      Vec2(w, 0),
-      Vec2(w, h),
-      Vec2(0, h),
-    ];
-
-    state = state.copyWith(
-      selectedVertexIndex: () => null,
-      curveDraftPoints: const [],
-    );
-    _updateMask(maskIndex, mask.copyWith(physicsTrackArea: newVertices));
-  }
-
-  void removePhysicsAreaVertex(int vertexIndex) {
-    final maskIndex = state.selectedIndex;
-    if (maskIndex == null) return;
-    final mask = state.masks[maskIndex];
-    if (vertexIndex < 0 || vertexIndex >= mask.physicsTrackArea.length) return;
-    final newVertices = [...mask.physicsTrackArea]..removeAt(vertexIndex);
-    state = state.copyWith(
-      selectedVertexIndex: () => null,
-      curveDraftPoints: const [],
-    );
-    _updateMask(maskIndex, mask.copyWith(physicsTrackArea: newVertices));
+  String? _physicsValidationError() {
+    for (final mask in state.allMasks) {
+      final error = validatePhysicsTrackArea(mask);
+      if (error != null) {
+        return 'Save blocked: ${mask.id} physics area $error';
+      }
+    }
+    return null;
   }
 }
 
 final assetDefinerProvider =
     NotifierProvider<AssetDefinerNotifier, AssetDefinerState>(
-        AssetDefinerNotifier.new);
-
-bool isSimplePolygon(List<Vec2> vertices) {
-  if (vertices.isEmpty) return true;
-  if (vertices.length < 3) return false;
-
-  final n = vertices.length;
-  for (var i = 0; i < n; i++) {
-    final p1 = vertices[i];
-    final q1 = vertices[(i + 1) % n];
-
-    for (var j = i + 1; j < n; j++) {
-      final p2 = vertices[j];
-      final q2 = vertices[(j + 1) % n];
-
-      if (_segmentsIntersect(p1, q1, p2, q2)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-bool _segmentsIntersect(Vec2 p1, Vec2 q1, Vec2 p2, Vec2 q2) {
-  final bool sharesVertex = (p1 == p2 || p1 == q2 || q1 == p2 || q1 == q2);
-
-  int o1 = _orientation(p1, q1, p2);
-  int o2 = _orientation(p1, q1, q2);
-  int o3 = _orientation(p2, q2, p1);
-  int o4 = _orientation(p2, q2, q1);
-
-  if (o1 != o2 && o3 != o4) {
-    if (sharesVertex) {
-      return false;
-    }
-    return true;
-  }
-
-  if (sharesVertex) {
-    if (q1 == p2) {
-      if (o3 == 0 && _onSegmentExclusive(p2, p1, q2)) return true;
-      if (o2 == 0 && _onSegmentExclusive(p1, q2, q1)) return true;
-    } else if (p1 == p2) {
-      if (o4 == 0 && _onSegmentExclusive(p2, q1, q2)) return true;
-      if (o2 == 0 && _onSegmentExclusive(p1, q2, q1)) return true;
-    } else if (q1 == q2) {
-      if (o3 == 0 && _onSegmentExclusive(p2, p1, q2)) return true;
-      if (o1 == 0 && _onSegmentExclusive(p1, p2, q1)) return true;
-    } else if (p1 == q2) {
-      if (o4 == 0 && _onSegmentExclusive(p2, q1, q2)) return true;
-      if (o1 == 0 && _onSegmentExclusive(p1, p2, q1)) return true;
-    }
-    return false;
-  }
-
-  if (o1 == 0 && _onSegment(p1, p2, q1)) return true;
-  if (o2 == 0 && _onSegment(p1, q2, q1)) return true;
-  if (o3 == 0 && _onSegment(p2, p1, q2)) return true;
-  if (o4 == 0 && _onSegment(p2, q1, q2)) return true;
-
-  return false;
-}
-
-int _orientation(Vec2 p, Vec2 q, Vec2 r) {
-  final val = (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
-  if (val == 0) return 0;
-  return (val > 0) ? 1 : 2;
-}
-
-bool _onSegment(Vec2 p, Vec2 r, Vec2 q) {
-  if (r.x <= math.max(p.x, q.x) && r.x >= math.min(p.x, q.x) &&
-      r.y <= math.max(p.y, q.y) && r.y >= math.min(p.y, q.y)) {
-    return true;
-  }
-  return false;
-}
-
-bool _onSegmentExclusive(Vec2 p, Vec2 r, Vec2 q) {
-  if (r == p || r == q) return false;
-  return r.x <= math.max(p.x, q.x) && r.x >= math.min(p.x, q.x) &&
-      r.y <= math.max(p.y, q.y) && r.y >= math.min(p.y, q.y);
-}
+      AssetDefinerNotifier.new,
+    );

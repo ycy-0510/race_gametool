@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../logic/island_tiles.dart';
 import '../../models/block_def.dart';
+import '../../logic/physics_track_area.dart';
 import '../../models/mask_draft.dart';
 import '../../models/port.dart';
 import '../../state/asset_definer_providers.dart';
@@ -15,7 +16,11 @@ class InspectorPanel extends ConsumerWidget {
   const InspectorPanel({super.key});
 
   Widget _buildIslandGrid(
-      MaskDraft mask, AssetDefinerNotifier notifier, int index, ThemeData theme) {
+    MaskDraft mask,
+    AssetDefinerNotifier notifier,
+    int index,
+    ThemeData theme,
+  ) {
     Widget dirBox(PortDirection dir, String label) {
       final hasPort = mask.ports.any((p) => p.direction == dir);
       return Expanded(
@@ -42,9 +47,10 @@ class InspectorPanel extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(vertical: 4),
             decoration: BoxDecoration(
               border: Border.all(
-                  color: hasPort
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.outlineVariant),
+                color: hasPort
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.outlineVariant,
+              ),
               color: hasPort
                   ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3)
                   : null,
@@ -113,19 +119,20 @@ class InspectorPanel extends ConsumerWidget {
       'Other',
     ];
     Widget statusChip(String label, bool ready) => Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 1),
-              child: Icon(ready ? Icons.check_circle : Icons.cancel,
-                  size: 15,
-                  color:
-                      ready ? Colors.greenAccent : theme.colorScheme.outline),
-            ),
-            const SizedBox(width: 4),
-            Expanded(child: Text(label, style: theme.textTheme.bodySmall)),
-          ],
-        );
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: Icon(
+            ready ? Icons.check_circle : Icons.cancel,
+            size: 15,
+            color: ready ? Colors.greenAccent : theme.colorScheme.outline,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Expanded(child: Text(label, style: theme.textTheme.bodySmall)),
+      ],
+    );
 
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
@@ -137,15 +144,19 @@ class InspectorPanel extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Island tiles: ${stats.total}',
-              style: theme.textTheme.titleSmall),
+          Text(
+            'Island tiles: ${stats.total}',
+            style: theme.textTheme.titleSmall,
+          ),
           const SizedBox(height: 6),
           for (final kind in kindOrder)
             if ((stats.countByKind[kind] ?? 0) > 0)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 1),
-                child: Text('$kind: ${stats.countByKind[kind]}',
-                    style: theme.textTheme.bodySmall),
+                child: Text(
+                  '$kind: ${stats.countByKind[kind]}',
+                  style: theme.textTheme.bodySmall,
+                ),
               ),
           const Divider(height: 14),
           statusChip(
@@ -166,8 +177,9 @@ class InspectorPanel extends ConsumerWidget {
             Text(
               '${stats.duplicated.length} kind(s) have duplicates '
               '(generator picks one at random)',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.outline),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.outline,
+              ),
             ),
           ],
         ],
@@ -236,8 +248,7 @@ class InspectorPanel extends ConsumerWidget {
                   isDense: true,
                   items: [
                     for (final c in BlockCategory.values)
-                      DropdownMenuItem(
-                          value: c, child: Text(categoryLabel(c))),
+                      DropdownMenuItem(value: c, child: Text(categoryLabel(c))),
                   ],
                   onChanged: (c) {
                     if (c != null) {
@@ -251,7 +262,10 @@ class InspectorPanel extends ConsumerWidget {
           if (mask.category == BlockCategory.islandTile) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Island Connections', style: theme.textTheme.titleSmall),
+              child: Text(
+                'Island Connections',
+                style: theme.textTheme.titleSmall,
+              ),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -262,7 +276,10 @@ class InspectorPanel extends ConsumerWidget {
             const Divider(),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Text('Physics Track Area', style: theme.textTheme.titleSmall),
+              child: Text(
+                'Physics Track Area',
+                style: theme.textTheme.titleSmall,
+              ),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -281,7 +298,7 @@ class InspectorPanel extends ConsumerWidget {
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                     tooltip: 'Undo last point',
-                    onPressed: mask.physicsTrackArea.isNotEmpty
+                    onPressed: state.physicsDrawing
                         ? () => notifier.undoPhysicsAreaVertex()
                         : null,
                   ),
@@ -291,24 +308,15 @@ class InspectorPanel extends ConsumerWidget {
                     visualDensity: VisualDensity.compact,
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
-                    tooltip: 'Clear all points',
+                    tooltip: 'Clear and redraw',
                     onPressed: mask.physicsTrackArea.isNotEmpty
                         ? () => notifier.clearPhysicsArea()
                         : null,
                   ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.crop_free, size: 16),
-                    visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    tooltip: 'Reset to bounding box',
-                    onPressed: () => notifier.resetPhysicsAreaToBoundingBox(),
-                  ),
                 ],
               ),
             ),
-             if (state.tool == Phase1Tool.drawPhysicsArea) ...[
+            if (state.physicsDrawing) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
                 child: Row(
@@ -318,7 +326,9 @@ class InspectorPanel extends ConsumerWidget {
                     Expanded(
                       child: SegmentedButton<bool>(
                         showSelectedIcon: false,
-                        style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                        style: const ButtonStyle(
+                          visualDensity: VisualDensity.compact,
+                        ),
                         segments: const [
                           ButtonSegment(
                             value: false,
@@ -340,151 +350,57 @@ class InspectorPanel extends ConsumerWidget {
                   ],
                 ),
               ),
-              if (state.curveMode) ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.tertiaryContainer,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.info_outline, size: 14, color: theme.colorScheme.onTertiaryContainer),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            state.curveDraftPoints.isEmpty
-                                ? 'Please choose the center of the circle'
-                                : state.curveDraftPoints.length == 1
-                                    ? 'Please choose the start of the curve'
-                                    : 'Please choose the end of the curve',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: theme.colorScheme.onTertiaryContainer,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-              (() {
-                final pts = mask.physicsTrackArea;
-                final isPolygonValid = pts.isEmpty || (pts.length >= 3 && isSimplePolygon(pts));
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                child: Row(
                   children: [
-                    if (pts.isNotEmpty && !isPolygonValid)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.errorContainer,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.error_outline, size: 14, color: theme.colorScheme.onErrorContainer),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  pts.length < 3
-                                      ? 'Need at least 3 points to complete'
-                                      : 'Area crosses itself! Please fix it',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: theme.colorScheme.onErrorContainer,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: theme.colorScheme.primaryContainer,
+                          foregroundColor:
+                              theme.colorScheme.onPrimaryContainer,
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                        ),
+                        onPressed: validatePhysicsTrackArea(mask) == null
+                            ? () => notifier.closePhysicsArea()
+                            : null,
+                        icon: const Icon(Icons.check, size: 14),
+                        label: const Text(
+                          'Complete',
+                          style: TextStyle(fontSize: 11),
                         ),
                       ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: theme.colorScheme.primaryContainer,
-                                foregroundColor: theme.colorScheme.onPrimaryContainer,
-                                visualDensity: VisualDensity.compact,
-                                padding: EdgeInsets.zero,
-                              ),
-                              onPressed: isPolygonValid ? () => notifier.closePhysicsArea() : null,
-                              icon: const Icon(Icons.check, size: 14),
-                              label: const Text('Complete', style: TextStyle(fontSize: 11)),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: theme.colorScheme.error,
-                                side: BorderSide(color: theme.colorScheme.error),
-                                visualDensity: VisualDensity.compact,
-                                padding: EdgeInsets.zero,
-                              ),
-                              onPressed: () => notifier.cancelPhysicsArea(),
-                              icon: const Icon(Icons.cancel, size: 14),
-                              label: const Text('Cancel', style: TextStyle(fontSize: 11)),
-                            ),
-                          ),
-                        ],
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: theme.colorScheme.error,
+                          side: BorderSide(color: theme.colorScheme.error),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                        ),
+                        onPressed: () => notifier.cancelPhysicsArea(),
+                        icon: const Icon(Icons.cancel, size: 14),
+                        label: const Text(
+                          'Cancel',
+                          style: TextStyle(fontSize: 11),
+                        ),
                       ),
                     ),
                   ],
-                );
-              })(),
-            ],
-            if (mask.physicsTrackArea.isNotEmpty) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                child: Text('Vertices: ${mask.physicsTrackArea.length} points',
-                    style: theme.textTheme.bodySmall),
-              ),
-              SizedBox(
-                height: 40,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: mask.physicsTrackArea.length,
-                  itemBuilder: (context, i) {
-                    final isVSelected = state.selectedVertexIndex == i;
-                    final pt = mask.physicsTrackArea[i];
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 6.0),
-                      child: InputChip(
-                        backgroundColor: isVSelected ? theme.colorScheme.secondaryContainer : null,
-                        label: Text('V${i + 1}: (${pt.x.round()}, ${pt.y.round()})',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: isVSelected ? FontWeight.bold : null,
-                            )),
-                        onPressed: () {
-                          // Click chip to select vertex
-                          notifier.selectVertex(i);
-                        },
-                        onDeleted: () => notifier.removePhysicsAreaVertex(i),
-                      ),
-                    );
-                  },
                 ),
               ),
             ],
             const Divider(),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Text('Ports (${mask.ports.length})',
-                  style: theme.textTheme.titleSmall),
+              child: Text(
+                'Ports (${mask.ports.length})',
+                style: theme.textTheme.titleSmall,
+              ),
             ),
             if (mask.ports.isEmpty)
               Padding(
@@ -533,28 +449,31 @@ class InspectorPanel extends ConsumerWidget {
                             items: [
                               for (final dir in options)
                                 DropdownMenuItem(
-                                    value: dir, child: Text(dir.jsonValue)),
+                                  value: dir,
+                                  child: Text(dir.jsonValue),
+                                ),
                             ],
                             onChanged: (dir) {
                               if (dir == null) return;
                               // Keep the pass-through flag only when the new
                               // direction stays on the same axis.
-                              final sameAxis = dir == port.direction ||
+                              final sameAxis =
+                                  dir == port.direction ||
                                   dir == port.direction.opposite;
                               notifier.updatePort(
                                 selectedIndex,
                                 portIndex,
                                 port.copyWith(
                                   direction: dir,
-                                  bidirectional:
-                                      port.bidirectional && sameAxis,
+                                  bidirectional: port.bidirectional && sameAxis,
                                 ),
                               );
                             },
                           ),
                     subtitle: Text(
-                        'cell (${port.localGridX}, ${port.localGridY}), '
-                        'span ${port.span}'),
+                      'cell (${port.localGridX}, ${port.localGridY}), '
+                      'span ${port.span}',
+                    ),
                     trailing: IconButton(
                       icon: const Icon(Icons.delete_outline, size: 18),
                       tooltip: 'Remove port',
@@ -570,7 +489,8 @@ class InspectorPanel extends ConsumerWidget {
             padding: const EdgeInsets.all(16),
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
-                  foregroundColor: theme.colorScheme.error),
+                foregroundColor: theme.colorScheme.error,
+              ),
               icon: const Icon(Icons.delete_forever),
               label: const Text('Delete Block'),
               onPressed: () => notifier.removeMask(selectedIndex),
@@ -581,8 +501,10 @@ class InspectorPanel extends ConsumerWidget {
           const Divider(height: 1),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-            child: Text('Blocks (${state.masks.length})',
-                style: theme.textTheme.titleSmall),
+            child: Text(
+              'Blocks (${state.masks.length})',
+              style: theme.textTheme.titleSmall,
+            ),
           ),
           Expanded(
             child: ListView.builder(
@@ -594,8 +516,9 @@ class InspectorPanel extends ConsumerWidget {
                   leading: const Icon(Icons.crop_square, size: 18),
                   title: Text(m.id),
                   subtitle: Text(
-                      '${m.widthCells} x ${m.heightCells} cells, '
-                      '${m.ports.length} ports'),
+                    '${m.widthCells} x ${m.heightCells} cells, '
+                    '${m.ports.length} ports',
+                  ),
                   onTap: () => notifier.selectMask(index),
                 );
               },

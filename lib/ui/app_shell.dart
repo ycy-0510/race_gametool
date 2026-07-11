@@ -600,6 +600,8 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
     final assetTool = ref.watch(assetDefinerProvider.select((s) => s.tool));
     final hasActiveImage = ref.watch(assetDefinerProvider.select((s) => s.activeImage != null));
     final assetStatusMessage = ref.watch(assetDefinerProvider.select((s) => s.statusMessage));
+    final physicsStatusMessage =
+        ref.watch(assetDefinerProvider.select((s) => s.physicsStatusMessage));
     final assetNotifier = ref.read(assetDefinerProvider.notifier);
 
     // Level toolbar/status state is scoped to the active tab; the fallbacks
@@ -989,7 +991,9 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
                         Expanded(
                           child: Text(
                             mode == AppMode.assetDefiner
-                                ? (assetStatusMessage ?? 'Asset Definer ready')
+                                ? (physicsStatusMessage ??
+                                      assetStatusMessage ??
+                                      'Asset Definer ready')
                                 : (levelStatusMessage ?? 'Level Editor ready'),
                             style: theme.textTheme.bodySmall?.copyWith(fontSize: 11),
                             overflow: TextOverflow.ellipsis,
