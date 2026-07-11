@@ -749,14 +749,35 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener {
                             ),
                           ),
 
-                          // Windows/Linux window control buttons.
+                          // Windows/Linux window control buttons, flush to the
+                          // right edge. WindowCaption is a full-width title bar
+                          // widget, so we place its individual buttons directly
+                          // instead of constraining the whole widget.
                           if (defaultTargetPlatform != TargetPlatform.macOS)
                             SizedBox(
-                              width: 140,
                               height: 40,
-                              child: WindowCaption(
-                                backgroundColor: Colors.transparent,
-                                brightness: theme.brightness,
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  WindowCaptionButton.minimize(
+                                    brightness: theme.brightness,
+                                    onPressed: windowManager.minimize,
+                                  ),
+                                  if (_isMaximized)
+                                    WindowCaptionButton.unmaximize(
+                                      brightness: theme.brightness,
+                                      onPressed: windowManager.unmaximize,
+                                    )
+                                  else
+                                    WindowCaptionButton.maximize(
+                                      brightness: theme.brightness,
+                                      onPressed: windowManager.maximize,
+                                    ),
+                                  WindowCaptionButton.close(
+                                    brightness: theme.brightness,
+                                    onPressed: windowManager.close,
+                                  ),
+                                ],
                               ),
                             ),
                         ],
