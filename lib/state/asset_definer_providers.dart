@@ -455,6 +455,57 @@ class AssetDefinerNotifier extends Notifier<AssetDefinerState> {
     );
   }
 
+  /// Imports an already-encoded image (the pixel editor hand-off) as the
+  /// given category's source image, no file dialog involved. Decoration
+  /// images are appended as a new source; other categories replace their
+  /// image and keep the masks, reporting any that fall out of bounds (same
+  /// contract as [loadImage]). Returns an error message, or null on success.
+  Future<String?> importImageBytes(
+      Uint8List bytes, String name, BlockCategory category) async {
+    final ui.Image image;
+    try {
+      image = await _decode(bytes);
+    } catch (e) {
+      return 'Phase 1 could not decode the image: $e';
+    }
+    final newImage = CategoryImage(bytes: bytes, image: image, name: name);
+
+    if (category == BlockCategory.decoration) {
+      state = state.copyWith(
+        decorationSources: [...state.decorationSources, newImage],
+        decorationMasks: [...state.decorationMasks, <MaskDraft>[]],
+        activeCategory: BlockCategory.decoration,
+        activeDecorationIndex: state.decorationSources.length,
+        selectedIndex: () => null,
+        isDirty: true,
+        statusMessage: () => 'Added decoration image $name',
+      );
+      return null;
+    }
+
+    final cols = (image.width / GridConstants.cellSize).ceil();
+    final rows = (image.height / GridConstants.cellSize).ceil();
+    final masks = state.masksByCategory[category] ?? const <MaskDraft>[];
+    final outOfBounds = masks
+        .where(
+          (m) =>
+              m.gridX + m.widthCells > cols || m.gridY + m.heightCells > rows,
+        )
+        .map((m) => m.id)
+        .toList();
+    state = state.copyWith(
+      images: {...state.images, category: newImage},
+      activeCategory: category,
+      selectedIndex: () => null,
+      isDirty: true,
+      statusMessage: () => outOfBounds.isEmpty
+          ? 'Imported $name (${image.width} x ${image.height} px)'
+          : 'Imported $name; ${outOfBounds.length} block(s) now out of '
+              'bounds: ${outOfBounds.join(', ')}',
+    );
+    return null;
+  }
+
   void setActiveDecorationIndex(int index) {
     if (index < 0 || index >= state.decorationSources.length) return;
     state = state.copyWith(

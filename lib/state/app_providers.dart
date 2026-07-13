@@ -9,7 +9,8 @@ import '../models/block_def.dart';
 /// The two top-level modes of the tool, selected via the NavigationRail.
 enum AppMode {
   assetDefiner('Phase 1: Asset Definer'),
-  levelEditor('Phase 2: Level Editor');
+  levelEditor('Phase 2: Level Editor'),
+  pixelEditor('Pixel Editor');
 
   const AppMode(this.label);
   final String label;
@@ -25,6 +26,7 @@ class WorkspaceState {
     this.levelTabs = const [],
     this.activeLevelTab,
     this.nextId = 0,
+    this.pixelEditorActive = false,
   });
 
   /// Ids of the open Phase 2 tabs, in display order.
@@ -36,20 +38,29 @@ class WorkspaceState {
   /// Next id to hand out. Never decremented.
   final int nextId;
 
+  /// Whether the pinned Pixel Editor tab is the active pinned tab. Only
+  /// consulted while no level tab is active.
+  final bool pixelEditorActive;
+
   /// The top-level mode derived from which tab is active.
-  AppMode get mode =>
-      activeLevelTab == null ? AppMode.assetDefiner : AppMode.levelEditor;
+  AppMode get mode => activeLevelTab != null
+      ? AppMode.levelEditor
+      : pixelEditorActive
+          ? AppMode.pixelEditor
+          : AppMode.assetDefiner;
 
   WorkspaceState copyWith({
     List<int>? levelTabs,
     int? Function()? activeLevelTab,
     int? nextId,
+    bool? pixelEditorActive,
   }) =>
       WorkspaceState(
         levelTabs: levelTabs ?? this.levelTabs,
         activeLevelTab:
             activeLevelTab != null ? activeLevelTab() : this.activeLevelTab,
         nextId: nextId ?? this.nextId,
+        pixelEditorActive: pixelEditorActive ?? this.pixelEditorActive,
       );
 }
 
@@ -70,7 +81,16 @@ class WorkspaceNotifier extends Notifier<WorkspaceState> {
   }
 
   /// Activates the pinned Phase 1 tab.
-  void activatePhase1() => state = state.copyWith(activeLevelTab: () => null);
+  void activatePhase1() => state = state.copyWith(
+        activeLevelTab: () => null,
+        pixelEditorActive: false,
+      );
+
+  /// Activates the pinned Pixel Editor tab.
+  void activatePixelEditor() => state = state.copyWith(
+        activeLevelTab: () => null,
+        pixelEditorActive: true,
+      );
 
   void activateLevelTab(int id) {
     if (state.levelTabs.contains(id)) {
@@ -98,7 +118,11 @@ class WorkspaceNotifier extends Notifier<WorkspaceState> {
   /// Closes every level tab and returns to Phase 1. Used when the asset set is
   /// replaced (New Config), since the open levels reference the old assets.
   void closeAllLevelTabs() {
-    state = state.copyWith(levelTabs: const [], activeLevelTab: () => null);
+    state = state.copyWith(
+      levelTabs: const [],
+      activeLevelTab: () => null,
+      pixelEditorActive: false,
+    );
   }
 }
 

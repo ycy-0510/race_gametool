@@ -11,8 +11,10 @@ import '../state/app_providers.dart';
 import '../state/asset_definer_providers.dart';
 import '../state/file_open_service.dart';
 import '../state/level_editor_providers.dart';
+import '../state/pixel_editor_providers.dart';
 import 'phase1/asset_definer_page.dart';
 import 'phase2/level_editor_page.dart';
+import 'pixel_editor/pixel_editor_page.dart';
 
 /// Main shell: a NavigationRail switching between the two tool phases.
 /// The active mode lives in Riverpod so any part of the app can switch modes.
@@ -134,6 +136,18 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
         content:
             'The level "${levelState.mapName}" has unsaved changes. Do you want to save before quitting?',
         onSave: () => levelNotifier.save(),
+      );
+      if (!proceed) {
+        return false;
+      }
+    }
+
+    final pixelState = ref.read(pixelEditorProvider);
+    if (pixelState.isDirty) {
+      final proceed = await _promptUnsavedChanges(
+        title: 'Save Pixel Art Changes?',
+        content: 'Your pixel art has unsaved changes. Do you want to save before quitting?',
+        onSave: () => ref.read(pixelEditorProvider.notifier).save(),
       );
       if (!proceed) {
         return false;
@@ -277,19 +291,23 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
 
   void _handleSave(WidgetRef ref) {
     final id = _activeLevelTab;
-    if (id == null) {
-      ref.read(assetDefinerProvider.notifier).save();
-    } else {
+    if (id != null) {
       ref.read(levelEditorProvider(id).notifier).save();
+    } else if (ref.read(workspaceProvider).mode == AppMode.pixelEditor) {
+      ref.read(pixelEditorProvider.notifier).save();
+    } else {
+      ref.read(assetDefinerProvider.notifier).save();
     }
   }
 
   void _handleSaveAs(WidgetRef ref) {
     final id = _activeLevelTab;
-    if (id == null) {
-      ref.read(assetDefinerProvider.notifier).saveAs();
-    } else {
+    if (id != null) {
       ref.read(levelEditorProvider(id).notifier).saveAs();
+    } else if (ref.read(workspaceProvider).mode == AppMode.pixelEditor) {
+      ref.read(pixelEditorProvider.notifier).saveAs();
+    } else {
+      ref.read(assetDefinerProvider.notifier).saveAs();
     }
   }
 
@@ -297,6 +315,8 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
     final id = _activeLevelTab;
     if (id != null) {
       ref.read(levelEditorProvider(id).notifier).undo();
+    } else if (ref.read(workspaceProvider).mode == AppMode.pixelEditor) {
+      ref.read(pixelEditorProvider.notifier).undo();
     }
   }
 
@@ -614,6 +634,7 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
     final assetTool = ref.watch(assetDefinerProvider.select((s) => s.tool));
     final hasActiveImage = ref.watch(assetDefinerProvider.select((s) => s.activeImage != null));
     final assetStatusMessage = ref.watch(assetDefinerProvider.select((s) => s.statusMessage));
+    final pixelStatusMessage = ref.watch(pixelEditorProvider.select((s) => s.statusMessage));
     final physicsStatusMessage =
         ref.watch(assetDefinerProvider.select((s) => s.physicsStatusMessage));
     final assetNotifier = ref.read(assetDefinerProvider.notifier);
@@ -644,8 +665,8 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
 
     final mainContent = CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.keyZ, control: true): () => levelNotifier?.undo(),
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): () => levelNotifier?.undo(),
+        const SingleActivator(LogicalKeyboardKey.keyZ, control: true): () => _handleUndo(ref),
+        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): () => _handleUndo(ref),
         const SingleActivator(LogicalKeyboardKey.keyW, control: true): () {
           if (activeId != null) _handleCloseTab(activeId);
         },
@@ -818,9 +839,14 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
                               // Tabs: pinned Phase 1 + one per open level. Shrinks
                               // when the row runs out of space, leaving a drag area.
                               _Phase1TabChip(
-                                selected: activeId == null,
+                                selected: activeId == null && mode != AppMode.pixelEditor,
                                 onSelect: () =>
                                     ref.read(workspaceProvider.notifier).activatePhase1(),
+                              ),
+                              _PixelTabChip(
+                                selected: mode == AppMode.pixelEditor,
+                                onSelect: () =>
+                                    ref.read(workspaceProvider.notifier).activatePixelEditor(),
                               ),
                               Flexible(
                                 flex: 10,
@@ -867,7 +893,10 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
                           ),
                         ),
 
-                        // Line 2: Tools and Action buttons (horizontal scrollable row)
+                        // Line 2: Tools and Action buttons (horizontal scrollable row).
+                        // The pixel editor brings its own toolbar inside its page,
+                        // so this row is omitted for it.
+                        if (mode != AppMode.pixelEditor)
                         Container(
                           height: 44,
                           color: theme.colorScheme.surfaceContainerHigh,
@@ -989,9 +1018,11 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
 
                   // Main View Content
                   Expanded(
-                    child: activeId == null
-                        ? const AssetDefinerPage()
-                        : LevelEditorPage(key: ValueKey(activeId), tabId: activeId),
+                    child: activeId != null
+                        ? LevelEditorPage(key: ValueKey(activeId), tabId: activeId)
+                        : mode == AppMode.pixelEditor
+                            ? const PixelEditorPage()
+                            : const AssetDefinerPage(),
                   ),
                   const Divider(height: 1),
 
@@ -1008,7 +1039,9 @@ class _AppShellState extends ConsumerState<AppShell> with WindowListener, Widget
                                 ? (physicsStatusMessage ??
                                       assetStatusMessage ??
                                       'Asset Definer ready')
-                                : (levelStatusMessage ?? 'Level Editor ready'),
+                                : mode == AppMode.pixelEditor
+                                    ? (pixelStatusMessage ?? 'Pixel Editor ready')
+                                    : (levelStatusMessage ?? 'Level Editor ready'),
                             style: theme.textTheme.bodySmall?.copyWith(fontSize: 11),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -1218,6 +1251,27 @@ class _Phase1TabChip extends ConsumerWidget {
     return _TabChip(
       icon: Icons.category,
       label: 'Asset Definer',
+      dirty: dirty,
+      selected: selected,
+      onSelect: onSelect,
+    );
+  }
+}
+
+/// The pinned Pixel Editor tab. Watches only its dirty flag, like the Phase 1
+/// chip.
+class _PixelTabChip extends ConsumerWidget {
+  const _PixelTabChip({required this.selected, required this.onSelect});
+
+  final bool selected;
+  final VoidCallback onSelect;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final dirty = ref.watch(pixelEditorProvider.select((s) => s.isDirty));
+    return _TabChip(
+      icon: Icons.draw,
+      label: 'Pixel Editor',
       dirty: dirty,
       selected: selected,
       onSelect: onSelect,
